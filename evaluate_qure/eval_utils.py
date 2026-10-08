@@ -3,6 +3,12 @@ import numpy as np
 import torch
 import wandb
 
+
+def _wandb_log(payload):
+    if wandb.run is not None:
+        wandb.log(payload)
+
+
 def eval_fiq(model, txt_processors, test_dataloaders, epoch, configs):
     model.eval()
     device = model.device
@@ -40,17 +46,21 @@ def eval_fiq(model, txt_processors, test_dataloaders, epoch, configs):
         results_dict[f"{cloth_type}_recall@10"] = recall_at10
         results_dict[f"{cloth_type}_recall@50"] = recall_at50
 
-        wandb.log({f"{cloth_type}_recall@10": recall_at10, "epoch": epoch})
-        wandb.log({f"{cloth_type}_recall@50": recall_at50, "epoch": epoch})
-        # torch.cuda.empty_cache()
+        _wandb_log({f"{cloth_type}_recall@10": recall_at10, "epoch": epoch})
+        _wandb_log({f"{cloth_type}_recall@50": recall_at50, "epoch": epoch})
+        print(f"[EPOCH {epoch+1}] {cloth_type} R@10={recall_at10:.2f} R@50={recall_at50:.2f}")
 
     average_recall_at10 = mean(recalls_at10)
     average_recall_at50 = mean(recalls_at50)
     average_recall = (mean(recalls_at50) + mean(recalls_at10)) / 2
 
-    wandb.log({f"average_recall_at10": average_recall_at10, "epoch": epoch})
-    wandb.log({f"average_recall_at50": average_recall_at50, "epoch": epoch})
-    wandb.log({f"average_recall": average_recall, "epoch": epoch})
+    _wandb_log({f"average_recall_at10": average_recall_at10, "epoch": epoch})
+    _wandb_log({f"average_recall_at50": average_recall_at50, "epoch": epoch})
+    _wandb_log({f"average_recall": average_recall, "epoch": epoch})
+    print(
+        f"[EPOCH {epoch+1}] FashionIQ avg R@10={average_recall_at10:.2f} "
+        f"R@50={average_recall_at50:.2f} avg={average_recall:.2f}"
+    )
 
 
 def eval_cirr(model, txt_processors, test_dataloaders, epoch, configs):
@@ -99,11 +109,15 @@ def eval_cirr(model, txt_processors, test_dataloaders, epoch, configs):
         group_recall_at2 = (torch.sum(group_labels[:, :2]) / len(group_labels)).item() * 100
         group_recall_at3 = (torch.sum(group_labels[:, :3]) / len(group_labels)).item() * 100
 
-        wandb.log({f"recall_at1": recall_at1, "epoch": epoch})
-        wandb.log({f"recall_at5": recall_at5, "epoch": epoch})
-        wandb.log({f"recall_at10": recall_at10, "epoch": epoch})
-        wandb.log({f"recall_at50": recall_at50, "epoch": epoch})
-        wandb.log({f"group_recall_at1": group_recall_at1, "epoch": epoch})
-        wandb.log({f"group_recall_at2": group_recall_at2, "epoch": epoch})
-        wandb.log({f"group_recall_at3": group_recall_at3, "epoch": epoch})
-        wandb.log({f"mean(R@5+R_s@1)": (group_recall_at1 + recall_at5) / 2, "epoch": epoch})
+        _wandb_log({f"recall_at1": recall_at1, "epoch": epoch})
+        _wandb_log({f"recall_at5": recall_at5, "epoch": epoch})
+        _wandb_log({f"recall_at10": recall_at10, "epoch": epoch})
+        _wandb_log({f"recall_at50": recall_at50, "epoch": epoch})
+        _wandb_log({f"group_recall_at1": group_recall_at1, "epoch": epoch})
+        _wandb_log({f"group_recall_at2": group_recall_at2, "epoch": epoch})
+        _wandb_log({f"group_recall_at3": group_recall_at3, "epoch": epoch})
+        _wandb_log({f"mean(R@5+R_s@1)": (group_recall_at1 + recall_at5) / 2, "epoch": epoch})
+        print(
+            f"[EPOCH {epoch+1}] CIRR R@1={recall_at1:.2f} R@5={recall_at5:.2f} "
+            f"R@10={recall_at10:.2f} R@50={recall_at50:.2f}"
+        )

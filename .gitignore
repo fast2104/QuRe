@@ -3,6 +3,10 @@
 
 .vscode/
 archive/__pycache__/
+__pycache__/
 *.pyc
 experiments/
 *.pth
+*.log
+fashioniq/images/
+fashioniq/image_data/
