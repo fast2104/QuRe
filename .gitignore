@@ -2,4 +2,7 @@
 .idea
 
 .vscode/
-archive/
+archive/__pycache__/
+*.pyc
+experiments/
+*.pth

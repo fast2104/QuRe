@@ -13,8 +13,8 @@ import torch
 import PIL
 import PIL.Image
 PIL.Image.MAX_IMAGE_PIXELS = None
-
-base_path = '-'
+from pathlib import Path
+base_path = Path("/teamspace/studios/this_studio/fashioniq")
 target_ratio = 1.25
 
 class CIRRDataset(Dataset):

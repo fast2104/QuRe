@@ -4,7 +4,7 @@ from transforms import image_transform_factory
 from data import create_dataloaders
 from models import create_qure_models
 import wandb
-
+wandb.init(mode="disabled")
 
 import math
 from tqdm import tqdm
@@ -80,15 +80,15 @@ def main():
             if hasattr(model, 'logit_scale'):
                 wandb.log({'temp': model.logit_scale.item(), "epoch": epoch})
 
-
         # Save the model for every 10 epochs
         # todo: adding evaluation
+        # Save checkpoint every epoch into the experiment folder created by setup_experiment
         if (epoch + 1) % 1 == 0:
-            #Save the model
-            saving_path = f""
+            saving_path = export_root
             os.makedirs(saving_path, exist_ok=True)
-            torch.save(model.state_dict(), f'{saving_path}/model.pth')
-            append_log(f'{saving_path}/log.txt', f"Epoch : {epoch + 1}\n")
+            torch.save(model.state_dict(), os.path.join(saving_path, "model.pth"))
+            append_log(os.path.join(saving_path, "log.txt"), f"Epoch : {epoch + 1}\n")
+            print(f"Saved checkpoint to {os.path.join(saving_path, 'model.pth')}")
 
         eval_frequency = 1
         if (epoch + 1) % eval_frequency == 0:
