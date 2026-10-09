@@ -76,31 +76,35 @@ class CIRRDataset(Dataset):
                     target_image_path = os.path.join(base_path  , self.name_to_relpath[target_hard_name])
                     target_image = self.preprocess(PIL.Image.open(target_image_path))
 
-                    if self.negative == 'random': # random negative sampling
+                    if self.negative in ['none', None, 'no', '']:
+                        return reference_image, target_image, target_hard_name, rel_caption
+                    elif self.negative == 'random': # random negative sampling
                         cur_non_target_pool = [name for name in self.image_names if name != target_hard_name]
                         negative_name = random.choice(cur_non_target_pool)
                         negative_targ_img_path = os.path.join(base_path  , self.name_to_relpath[negative_name])
                         negative_target_img = self.preprocess(PIL.Image.open(negative_targ_img_path))
+                        return reference_image, target_image, negative_target_img, target_hard_name, rel_caption
                     elif self.negative == 'random_rerank': # hard negative sampling after reranking
-                        # negative_name = random.choice(self.hard_images[index])
-                        if index not in self.negative_selection_history:
-                            self.negative_selection_history[index] = []
+                        if len(self.hard_images) > index and len(self.hard_images[index]) > 0:
+                            if index not in self.negative_selection_history:
+                                self.negative_selection_history[index] = []
 
-                        if len(self.hard_images[index]) == len(self.negative_selection_history[index]):
-                            self.negative_selection_history[index] = []
+                            if len(self.hard_images[index]) == len(self.negative_selection_history[index]):
+                                self.negative_selection_history[index] = []
 
-                        while True:
-                            negative_name = random.choice(self.hard_images[index])
-                            if negative_name not in self.negative_selection_history[index]:
-                                self.negative_selection_history[index].append(negative_name)
-                                break
+                            while True:
+                                negative_name = random.choice(self.hard_images[index])
+                                if negative_name not in self.negative_selection_history[index]:
+                                    self.negative_selection_history[index].append(negative_name)
+                                    break
 
-                        negative_targ_img_path = os.path.join(base_path  , self.name_to_relpath[negative_name])
-                        negative_target_img = self.preprocess(PIL.Image.open(negative_targ_img_path))
+                            negative_targ_img_path = os.path.join(base_path  , self.name_to_relpath[negative_name])
+                            negative_target_img = self.preprocess(PIL.Image.open(negative_targ_img_path))
+                            return reference_image, target_image, negative_target_img, target_hard_name, rel_caption
+                        else:
+                            return reference_image, target_image, target_hard_name, rel_caption
                     else:
-                        raise ValueError("Undefined Negative Sampling Method")
-                    # captions = [txt_processors["eval"](caption) for caption in rel_caption]
-                    return reference_image, target_image, negative_target_img, target_hard_name, rel_caption
+                        return reference_image, target_image, target_hard_name, rel_caption
 
                 elif self.split == 'val':
                     reference_image_path = os.path.join(base_path, self.name_to_relpath[reference_name])

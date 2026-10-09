@@ -76,7 +76,7 @@ class BlipQuRe(BlipBase):
         else:
             return contextlib.nullcontext()
 
-    def forward(self, ref_images, tar_images, sentences, negative_images, use_temp):
+    def forward(self, ref_images, tar_images, sentences, negative_images=None, use_temp=True):
         device = ref_images.device
 
         with self.maybe_autocast():
@@ -106,23 +106,30 @@ class BlipQuRe(BlipBase):
 
         with self.maybe_autocast():
             tar_image_embedding = self.visual_encoder.forward_features(tar_images)
-            negative_image_embedding = self.visual_encoder.forward_features(negative_images)
         tar_projected_image = self.vision_proj(tar_image_embedding[:, 0, :])
-        negative_projected_image = self.vision_proj(negative_image_embedding[:, 0, :])
 
-        if use_temp:
-            projected_text = F.normalize(projected_text, p=2, dim=-1)
-            tar_projected_image = F.normalize(tar_projected_image, p=2, dim=-1)
+        projected_text = F.normalize(projected_text, p=2, dim=-1)
+        tar_projected_image = F.normalize(tar_projected_image, p=2, dim=-1)
+
+        if negative_images is not None:
+            with self.maybe_autocast():
+                negative_image_embedding = self.visual_encoder.forward_features(negative_images)
+            negative_projected_image = self.vision_proj(negative_image_embedding[:, 0, :])
             negative_projected_image = F.normalize(negative_projected_image, p=2, dim=-1)
 
-            score_1 = torch.sum(projected_text * tar_projected_image, dim=1) / self.temp
-            score_2 = torch.sum(projected_text * negative_projected_image, dim=1) / self.temp
+            if use_temp:
+                score_1 = torch.sum(projected_text * tar_projected_image, dim=1) / self.temp
+                score_2 = torch.sum(projected_text * negative_projected_image, dim=1) / self.temp
+            else:
+                score_1 = torch.sum(projected_text * tar_projected_image, dim=1)
+                score_2 = torch.sum(projected_text * negative_projected_image, dim=1)
 
-        else:
-            score_1 = torch.sum(projected_text * tar_projected_image, dim=1)
-            score_2 = torch.sum(projected_text * negative_projected_image, dim=1)
+            scores = torch.stack([score_1, score_2], dim=1)
+            return scores
 
-        scores = torch.stack([score_1, score_2], dim=1)
+        scores = torch.matmul(projected_text, tar_projected_image.t())
+        if use_temp:
+            scores = scores / self.temp
         return scores
 
     @torch.no_grad()

@@ -34,31 +34,37 @@ def main():
     scaler =  torch.cuda.amp.GradScaler()
     for epoch in range(max_epochs):
         model.train()
-        if configs["use_rerank"]:
+        # Hard negative sampling rerank disabled
+        if configs.get("use_rerank", False) and hasattr(train_dataloader.dataset, "rerank_score"):
             if (epoch % (max_epochs // configs["negative_definition_epoch_num"])) == 0:
                 if not configs['rerank_warmup'] or (epoch != 0 and configs['rerank_warmup']):
                     train_dataloader.dataset.rerank_score(model, device, txt_processors, configs, epoch)
 
-
         epoch_running_loss = 0.0
         cosine_lr_schedule(optimizer, epoch, max_epochs, configs["init_lr"], configs["init_lr"]/100)
         train_dataloader_tqdm = tqdm(train_dataloader, desc="Epoch {}".format(epoch+1))
-        for batch_idx, (ref_images, tar_images, negative_images, sentences) in enumerate(train_dataloader_tqdm):
+        for batch_idx, batch_data in enumerate(train_dataloader_tqdm):
             optimizer.zero_grad()
 
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                ref_images, tar_images, negative_images = ref_images.to(device), tar_images.to(
-                    device), negative_images.to(device)
+                if len(batch_data) == 3:
+                    ref_images, tar_images, sentences = batch_data
+                elif len(batch_data) == 4:
+                    ref_images, tar_images, _, sentences = batch_data
+                else:
+                    raise ValueError(f"Unexpected batch format with {len(batch_data)} elements")
+
+                ref_images = ref_images.to(device)
+                tar_images = tar_images.to(device)
 
                 sentences = [txt_processors["eval"](caption) for caption in sentences]
-                scores = model(ref_images, tar_images, sentences, negative_images, configs['use_temp'])
+                scores = model(ref_images, tar_images, sentences, use_temp=configs['use_temp'])
 
-                log_softmax_scores = F.log_softmax(scores, dim=1)  
-
-                target_probs = torch.zeros_like(log_softmax_scores)
-                target_probs[:, 0] = 1.0  # p0 = 1 for each data point
-
-                loss = F.kl_div(log_softmax_scores, target_probs, reduction='batchmean')
+                # Contrastive loss (InfoNCE over in-batch negatives)
+                targets = torch.arange(ref_images.shape[0], device=device, dtype=torch.long)
+                loss_q2t = F.cross_entropy(scores, targets)
+                loss_t2q = F.cross_entropy(scores.t(), targets)
+                loss = (loss_q2t + loss_t2q) / 2
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -73,7 +79,8 @@ def main():
         if configs["experiment_description"] != 'debug':
             wandb.log({"loss" : cur_loss, "epoch" : epoch})
             wandb.log({'lr' : get_current_lr(optimizer), "epoch": epoch})
-            wandb.log({'k': topk, "epoch": epoch})
+            if 'topk' in locals():
+                wandb.log({'k': topk, "epoch": epoch})
             if hasattr(model, 'temp'):
                 wandb.log({'temp': model.temp.item(), "epoch": epoch})
 

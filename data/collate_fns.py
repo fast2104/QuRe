@@ -15,13 +15,17 @@ class BLIPPaddingCollateFunction(object):
     def __init__(self):
         pass
     def __call__(self, batch: List[tuple]):
-        reference_images, target_images, negative_target_img, targ_id, sentences = zip(*batch)
-
-        reference_images = torch.stack(reference_images, dim=0)
-        target_images = torch.stack(target_images, dim=0)
-        negative_target_img = torch.stack(negative_target_img, dim=0)
-
-        return reference_images, target_images, negative_target_img, sentences
+        if len(batch[0]) == 4:
+            reference_images, target_images, targ_id, sentences = zip(*batch)
+            reference_images = torch.stack(reference_images, dim=0)
+            target_images = torch.stack(target_images, dim=0)
+            return reference_images, target_images, sentences
+        else:
+            reference_images, target_images, negative_target_img, targ_id, sentences = zip(*batch)
+            reference_images = torch.stack(reference_images, dim=0)
+            target_images = torch.stack(target_images, dim=0)
+            negative_target_img = torch.stack(negative_target_img, dim=0)
+            return reference_images, target_images, negative_target_img, sentences
 
 
 class BLIPPaddingCollateFunctionTest(object):

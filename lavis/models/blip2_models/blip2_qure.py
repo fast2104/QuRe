@@ -20,6 +20,7 @@ from data.utils import targetpad_transform
 preprocess = targetpad_transform(1.25, 224)
 
 from lavis.common.registry import registry
+from lavis.common.dist_utils import download_cached_file, is_url
 from lavis.models.base_model import all_gather_with_grad, concat_all_gather
 from lavis.models.blip2_models.blip2 import (
     Blip2Base,
@@ -75,6 +76,8 @@ class Blip2QuRe(Blip2Base):
             print("freeze vision encoder")
         else:
             print("train vision encoder")
+
+        # 1. Query Q-Former (Ref img + text)
         self.Qformer, self.query_tokens = self.init_Qformer(
             num_query_token, self.visual_encoder.num_features, cross_attention_freq
         )
@@ -84,9 +87,27 @@ class Blip2QuRe(Blip2Base):
             if "_query" in name:
                 key_orig = name.replace("_query", "")
                 param.data.copy_(state_dict[key_orig])
+        self.query_Qformer = self.Qformer  # alias
 
-        self.vision_proj = nn.Linear(self.Qformer.config.hidden_size, embed_dim)
+        # 2. Target Q-Former (Target image)
+        self.target_Qformer, self.target_query_tokens = self.init_Qformer(
+            num_query_token, self.visual_encoder.num_features, cross_attention_freq
+        )
+        state_dict_tar = self.target_Qformer.state_dict()
+        for name, param in self.target_Qformer.named_parameters():
+            if "_query" in name:
+                key_orig = name.replace("_query", "")
+                param.data.copy_(state_dict_tar[key_orig])
+
+        # Initialize target_Qformer from Qformer weights
+        self.target_Qformer.load_state_dict(self.Qformer.state_dict())
+        self.target_query_tokens.data.copy_(self.query_tokens.data)
+
+        # Projections
+        self.vision_proj = nn.Linear(self.target_Qformer.config.hidden_size, embed_dim)
         self.text_proj = nn.Linear(self.Qformer.config.hidden_size, embed_dim)
+        self.target_proj = self.vision_proj  # alias
+        self.query_proj = self.text_proj  # alias
 
         self.itm_head = nn.Linear(self.Qformer.config.hidden_size, 2)
 
@@ -94,7 +115,32 @@ class Blip2QuRe(Blip2Base):
 
         self.max_txt_len = max_txt_len
 
-    def forward(self, ref_images, tar_images, sentences, negative_images, use_temp):
+    def load_from_pretrained(self, url_or_filename):
+        if is_url(url_or_filename):
+            cached_file = download_cached_file(
+                url_or_filename, check_hash=False, progress=True
+            )
+            checkpoint = torch.load(cached_file, map_location="cpu")
+        elif os.path.isfile(url_or_filename):
+            checkpoint = torch.load(url_or_filename, map_location="cpu")
+        else:
+            raise RuntimeError("checkpoint url or path is invalid")
+
+        state_dict = checkpoint["model"]
+
+        # If checkpoint only has one Qformer (from official BLIP-2 pretraining), copy to target_Qformer
+        if not any(k.startswith("target_Qformer.") for k in state_dict.keys()):
+            for k in list(state_dict.keys()):
+                if k.startswith("Qformer."):
+                    state_dict[k.replace("Qformer.", "target_Qformer.")] = state_dict[k].clone()
+            if "query_tokens" in state_dict and "target_query_tokens" not in state_dict:
+                state_dict["target_query_tokens"] = state_dict["query_tokens"].clone()
+
+        msg = self.load_state_dict(state_dict, strict=False)
+        logging.info("load checkpoint from %s" % url_or_filename)
+        return msg
+
+    def forward(self, ref_images, tar_images, sentences, negative_images=None, use_temp=True, return_loss=False):
         device = ref_images.device
         batch_size = ref_images.shape[0]
 
@@ -106,7 +152,7 @@ class Blip2QuRe(Blip2Base):
             return_tensors="pt",
         ).to(device)
 
-        # Query Embeddings
+        # 1. Query Embeddings (Ref img + text -> Query Q-Former)
         with self.maybe_autocast():
             ref_image_embedding = self.ln_vision(self.visual_encoder(ref_images))
         ref_image_embedding = ref_image_embedding.float()
@@ -117,71 +163,55 @@ class Blip2QuRe(Blip2Base):
         attention_mask = torch.cat([query_atts, text_tokens.attention_mask], dim=1)
 
         query_output = self.Qformer.bert(
-                text_tokens.input_ids,
-                query_embeds=query_tokens,
-                attention_mask=attention_mask,
-                encoder_hidden_states=ref_image_embedding,
-                encoder_attention_mask=ref_image_embedding_atts,
-                return_dict=True,
-            )
+            text_tokens.input_ids,
+            query_embeds=query_tokens,
+            attention_mask=attention_mask,
+            encoder_hidden_states=ref_image_embedding,
+            encoder_attention_mask=ref_image_embedding_atts,
+            return_dict=True,
+        )
 
         query_embeds = query_output.last_hidden_state[:, : query_tokens.size(1), :]
         projected_query = self.text_proj(query_embeds).mean(dim=1)
-        # projected_query = projected_query.mean(dim=1)
+        projected_query = F.normalize(projected_query, p=2, dim=-1)
 
-        # Target & Negative Embeddings
+        # 2. Target Embeddings (Target image -> Target Q-Former)
         with self.maybe_autocast():
             tar_image_embedding = self.ln_vision(self.visual_encoder(tar_images))
-            neg_image_embedding = self.ln_vision(self.visual_encoder(negative_images))
 
         tar_image_embedding = tar_image_embedding.float()
         tar_image_atts = torch.ones(
             tar_image_embedding.size()[:-1], dtype=torch.long
-        ).to(self.device)
+        ).to(device)
 
-        tar_query_output = self.Qformer.bert(
-            query_embeds=query_tokens,
+        target_query_tokens = self.target_query_tokens.expand(
+            tar_image_embedding.shape[0], -1, -1
+        )
+        tar_query_output = self.target_Qformer.bert(
+            query_embeds=target_query_tokens,
             encoder_hidden_states=tar_image_embedding,
             encoder_attention_mask=tar_image_atts,
             return_dict=True,
         )
         tar_image_embeds = tar_query_output.last_hidden_state
-
-        neg_image_embedding = neg_image_embedding.float()
-        neg_image_atts = torch.ones(
-            neg_image_embedding.size()[:-1], dtype=torch.long
-        ).to(self.device)
-        # neg_query_tokens = self.query_tokens.expand(
-        #     neg_image_embedding.shape[0], -1, -1
-        # )
-
-        neg_query_output = self.Qformer.bert(
-            query_embeds=query_tokens,
-            encoder_hidden_states=neg_image_embedding,
-            encoder_attention_mask=neg_image_atts,
-            return_dict=True,
-        )
-        neg_image_embeds = neg_query_output.last_hidden_state
-
         tar_projected_image = self.vision_proj(tar_image_embeds)
-        neg_projected_image = self.vision_proj(neg_image_embeds)
-
-        projected_query = F.normalize(projected_query, p=2, dim=-1)
         tar_projected_image = F.normalize(tar_projected_image, p=2, dim=-1)
-        neg_projected_image = F.normalize(neg_projected_image, p=2, dim=-1)
 
-        scores_1 = torch.bmm(tar_projected_image, projected_query.unsqueeze(-1))
-        score_1, _ = torch.max(scores_1, dim=1)
-
-        scores_2 = torch.bmm(neg_projected_image, projected_query.unsqueeze(-1))
-        score_2, _ = torch.max(scores_2, dim=1)
+        # 3. Contrastive Similarity across batch [B, B]
+        scores = torch.einsum('ik,jlk->ijl', projected_query, tar_projected_image)
+        sim_matrix, _ = torch.max(scores, dim=-1)
 
         if use_temp:
-            score_1 = score_1 / self.temp
-            score_2 = score_2 / self.temp
+            sim_matrix = sim_matrix / self.temp
 
-        scores = torch.stack([score_1, score_2], dim=1).squeeze(-1)
-        return scores
+        if return_loss:
+            targets = torch.arange(batch_size, device=device, dtype=torch.long)
+            loss_q2t = F.cross_entropy(sim_matrix, targets)
+            loss_t2q = F.cross_entropy(sim_matrix.t(), targets)
+            loss = (loss_q2t + loss_t2q) / 2
+            return loss
+
+        return sim_matrix
 
     @torch.no_grad()
     def extract_target_features(self, dataloader, use_temp, device):
@@ -197,8 +227,8 @@ class Blip2QuRe(Blip2Base):
 
             img_embedding = img_embedding.float()
             img_atts = torch.ones(img_embedding.size()[:-1], dtype=torch.long).to(device)
-            query_tokens = self.query_tokens.expand(img_embedding.shape[0], -1, -1)
-            query_output = self.Qformer.bert(
+            query_tokens = self.target_query_tokens.expand(img_embedding.shape[0], -1, -1)
+            query_output = self.target_Qformer.bert(
                 query_embeds=query_tokens,
                 encoder_hidden_states=img_embedding,
                 encoder_attention_mask=img_atts,
@@ -461,8 +491,8 @@ class Blip2QuRe(Blip2Base):
 
             target_image_embedding = target_image_embedding.float()
             target_image_atts = torch.ones(target_image_embedding.size()[:-1], dtype=torch.long).to(device)
-            query_tokens = self.query_tokens.expand(target_image_embedding.shape[0], -1, -1)
-            query_output = self.Qformer.bert(
+            query_tokens = self.target_query_tokens.expand(target_image_embedding.shape[0], -1, -1)
+            query_output = self.target_Qformer.bert(
                 query_embeds=query_tokens,
                 encoder_hidden_states=target_image_embedding,
                 encoder_attention_mask=target_image_atts,

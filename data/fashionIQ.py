@@ -119,40 +119,34 @@ class FashionIQDataset(Dataset):
                     # self.non_target_pool = self.domain_image_names[cur_dress_type]
                     self.non_target_pool = [triplet['target'] for triplet in self.domain_triplets[cur_dress_type]]
 
-                    if self.negative == 'random': # random negative sampling
+                    if self.negative in ['none', None, 'no', '']:
+                        return reference_image, target_image, target_name, rel_caption
+                    elif self.negative == 'random': # random negative sampling
                         cur_non_target_pool = [name for name in self.non_target_pool if name != target_name]
                         negative_name = random.choice(cur_non_target_pool) # Sample from Target pool (!= target)
                         negative_targ_img_path = base_path / 'images' / f"{negative_name}.png"
                         negative_target_img = self.preprocess(PIL.Image.open(negative_targ_img_path))
-                        # negative_target_img = _get_img_from_path(negative_targ_img_path, self.preprocess)
+                        return reference_image, target_image, negative_target_img, target_name, rel_caption
                     elif self.negative == 'random_rerank': # hard negative sampling after reranking
-                        if index not in self.negative_selection_history:
-                            self.negative_selection_history[index] = []
+                        if len(self.hard_images) > index and len(self.hard_images[index]) > 0:
+                            if index not in self.negative_selection_history:
+                                self.negative_selection_history[index] = []
 
-                        if len(self.hard_images[index]) == len(self.negative_selection_history[index]):
-                            self.negative_selection_history[index] = []
+                            if len(self.hard_images[index]) == len(self.negative_selection_history[index]):
+                                self.negative_selection_history[index] = []
 
-                        while True:
-                            negative_name = random.choice(self.hard_images[index])
-                            if negative_name not in self.negative_selection_history[index]:
-                                break  # Stop resampling once a unique negative is found
-                        # negative_name = random.choice(self.hard_images[index])
-                        negative_targ_img_path = base_path / 'images' / f"{negative_name}.png"
-                        negative_target_img = self.preprocess(PIL.Image.open(negative_targ_img_path))
-
-                        self.negative_selection_history[index].append(negative_name)
-
-                    # elif self.negative == 'rerank':
-                    #     negative_target_img = []
-                    #     for negative_name in self.hard_images[index]:
-                    #         negative_targ_img_path = base_path / 'images' / f"{negative_name}.png"
-                    #         negative_target_img_ = self.preprocess(PIL.Image.open(negative_targ_img_path))
-                    #         negative_target_img.append(negative_target_img_)
-                    #     # negative_target_img = torch.stack(negative_target_img, dim=0)
+                            while True:
+                                negative_name = random.choice(self.hard_images[index])
+                                if negative_name not in self.negative_selection_history[index]:
+                                    break  # Stop resampling once a unique negative is found
+                            negative_targ_img_path = base_path / 'images' / f"{negative_name}.png"
+                            negative_target_img = self.preprocess(PIL.Image.open(negative_targ_img_path))
+                            self.negative_selection_history[index].append(negative_name)
+                            return reference_image, target_image, negative_target_img, target_name, rel_caption
+                        else:
+                            return reference_image, target_image, target_name, rel_caption
                     else:
-                        raise ValueError("Undefined Negative Sampling Method")
-
-                    return reference_image, target_image, negative_target_img, target_name, rel_caption
+                        return reference_image, target_image, target_name, rel_caption
 
                 elif self.split == 'val':
                     reference_image_path = base_path / 'images' / f"{reference_name}.png"
