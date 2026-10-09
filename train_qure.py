@@ -30,9 +30,23 @@ def main():
 
     max_epochs = configs['epoch']
 
+    # Auto-resume from latest experiment checkpoint if available
+    latest_ckpt = "/home/iec/sontung_veryIMPORTANT/QuRe/experiments/debug_2026-10-08_0/model.pth"
+    start_epoch = 0
+    if os.path.exists(latest_ckpt):
+        print(f" Found existing checkpoint at {latest_ckpt}! Loading model weights...")
+        model.load_state_dict(torch.load(latest_ckpt, map_location=device))
+        log_file = os.path.join(os.path.dirname(latest_ckpt), "log.txt")
+        if os.path.exists(log_file):
+            with open(log_file, "r") as f:
+                lines = [line.strip() for line in f if "Epoch" in line]
+                if lines:
+                    start_epoch = int(lines[-1].split(":")[-1].strip())
+                    print(f" Resuming training from Epoch {start_epoch + 1}/{max_epochs}...")
+
     model.train()
     scaler =  torch.cuda.amp.GradScaler()
-    for epoch in range(max_epochs):
+    for epoch in range(start_epoch, max_epochs):
         model.train()
         if configs["use_rerank"]:
             if (epoch % (max_epochs // configs["negative_definition_epoch_num"])) == 0:
