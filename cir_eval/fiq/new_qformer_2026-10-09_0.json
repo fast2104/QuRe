@@ -1,0 +1,15 @@
+{
+    "fashionIQ_dress_recall@5": 33.7630143777888,
+    "fashionIQ_dress_recall@10": 43.13336638572137,
+    "fashionIQ_dress_recall@50": 66.68319286068419,
+    "fashionIQ_shirt_recall@5": 41.31501472031404,
+    "fashionIQ_shirt_recall@10": 50.098135426889115,
+    "fashionIQ_shirt_recall@50": 70.65750736015701,
+    "fashionIQ_toptee_recall@5": 41.86639469658338,
+    "fashionIQ_toptee_recall@10": 52.06527281998981,
+    "fashionIQ_toptee_recall@50": 74.09484956654768,
+    "average_recall_at5": 38.981474598228736,
+    "average_recall_at10": 48.43225821086676,
+    "average_recall_at50": 70.4785165957963,
+    "average_recall": 59.45538740333153
+}

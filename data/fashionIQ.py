@@ -21,7 +21,7 @@ import PIL.Image
 
 
 from pathlib import Path
-base_path = Path("/teamspace/studios/this_studio/fashioniq")
+base_path = Path(__file__).resolve().parent.parent / "fashioniq"
 target_ratio = 1.25
 
 class FashionIQDataset(Dataset):

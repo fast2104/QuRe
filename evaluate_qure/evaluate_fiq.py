@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+from collections import Counter
 from statistics import mean
 import numpy as np
 
@@ -13,6 +14,40 @@ from transforms import image_transform_factory
 from data import create_dataloaders
 from models import create_qure_models
 import torch
+
+
+def _compute_recall_at_k(model, query_features, target_features, target_names, index_names):
+    if not target_names:
+        raise ValueError("FashionIQ validation split contains no queries")
+
+    index_name_counts = Counter(index_names)
+    invalid_targets = [name for name in target_names if index_name_counts[name] != 1]
+    if invalid_targets:
+        raise ValueError(
+            f"{len(invalid_targets)} FashionIQ targets do not occur exactly once in the gallery"
+        )
+
+    recall_ks = (5, 10, 50)
+    recall_hits = {k: 0 for k in recall_ks}
+    index_names = np.asarray(index_names)
+    max_k = min(max(recall_ks), len(index_names))
+
+    for start in range(0, len(target_names), 64):
+        end = min(start + 64, len(target_names))
+        scores = model.score(query_features[start:end], target_features)
+        sorted_indices = torch.argsort(scores, dim=-1, descending=True)[:, :max_k].cpu()
+        retrieved_names = index_names[sorted_indices]
+        batch_targets = np.asarray(target_names[start:end])[:, None]
+        matches = retrieved_names == batch_targets
+
+        for k in recall_ks:
+            recall_hits[k] += np.any(matches[:, :min(k, max_k)], axis=1).sum()
+
+    return {
+        k: recall_hits[k] / len(target_names) * 100
+        for k in recall_ks
+    }
+
 
 def main():
     configs = get_experiment_config()
@@ -48,20 +83,12 @@ def main():
         predicted_features, target_names = model.extract_query_features_fiq(
             cur_test_query_dataloader, configs['use_temp'], txt_processors, device)
 
-        scores = model.score(predicted_features, index_features)
-
-        sorted_indices = torch.argsort(scores, dim=-1, descending=True).cpu()
-        sorted_index_names = np.array(index_names)[sorted_indices]
-
-        # Compute the ground-truth labels wrt the predictions
-        labels = torch.tensor(
-            sorted_index_names == np.repeat(np.array(target_names), len(index_names)).reshape(len(target_names), -1))
-        assert torch.equal(torch.sum(labels, dim=-1).int(), torch.ones(len(target_names)).int())
-
-        # Compute the metrics
-        recall_at5 = (torch.sum(labels[:, :5]) / len(labels)).item() * 100
-        recall_at10 = (torch.sum(labels[:, :10]) / len(labels)).item() * 100
-        recall_at50 = (torch.sum(labels[:, :50]) / len(labels)).item() * 100
+        recalls = _compute_recall_at_k(
+            model, predicted_features, index_features, target_names, index_names
+        )
+        recall_at5 = recalls[5]
+        recall_at10 = recalls[10]
+        recall_at50 = recalls[50]
 
         recalls_at5.append(recall_at5)
         recalls_at10.append(recall_at10)

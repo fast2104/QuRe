@@ -20,7 +20,8 @@ from data.utils import targetpad_transform
 preprocess = targetpad_transform(1.25, 224)
 
 from lavis.common.registry import registry
-from lavis.common.dist_utils import download_cached_file, is_url
+from lavis.common.dist_utils import download_cached_file
+from lavis.common.utils import is_url
 from lavis.models.base_model import all_gather_with_grad, concat_all_gather
 from lavis.models.blip2_models.blip2 import (
     Blip2Base,
@@ -93,6 +94,7 @@ class Blip2QuRe(Blip2Base):
         self.target_Qformer, self.target_query_tokens = self.init_Qformer(
             num_query_token, self.visual_encoder.num_features, cross_attention_freq
         )
+        self.target_Qformer.resize_token_embeddings(len(self.tokenizer))
         state_dict_tar = self.target_Qformer.state_dict()
         for name, param in self.target_Qformer.named_parameters():
             if "_query" in name:
