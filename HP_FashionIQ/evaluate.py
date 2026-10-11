@@ -26,7 +26,7 @@ def load_model():
     
     # Load pretrained weights
     MS_pretrained_path = configs["pretrained_path"]
-    msg = model.load_state_dict(torch.load(f'{MS_pretrained_path}/model.pth', map_location=device), strict=False)
+    msg = model.load_state_dict(torch.load(f'{MS_pretrained_path}/model.pth', map_location=device), strict=True)
     model.to(device)
     model.eval()
     

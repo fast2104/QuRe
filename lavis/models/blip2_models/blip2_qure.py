@@ -32,10 +32,13 @@ from lavis.models.blip_models.blip_outputs import BlipOutput, BlipOutputFeatures
 @registry.register_model("blip2_qure")
 class Blip2QuRe(Blip2Base):
     """
-    BLIP Image-Text Matching (ITM) model.
+    QuRe with independent Q-Formers for the reference image, relative text,
+    and target image. Reference-image and text features are fused into the
+    composed query representation.
+
     Supported model types:
         - pretrained: pretrained model
-        - coco: fintuned model on coco
+        - coco: fine-tuned model on coco
     Usage:
         >>> from lavis.models import load_model
         >>> model = load_model("blip2_qure", "pretrain")
@@ -78,26 +81,78 @@ class Blip2QuRe(Blip2Base):
         self.Qformer, self.query_tokens = self.init_Qformer(
             num_query_token, self.visual_encoder.num_features, cross_attention_freq
         )
-        self.Qformer.resize_token_embeddings(len(self.tokenizer))
-        state_dict = self.Qformer.state_dict()
-        for name, param in self.Qformer.named_parameters():
-            if "_query" in name:
-                key_orig = name.replace("_query", "")
-                param.data.copy_(state_dict[key_orig])
+        self.ref_Qformer, self.ref_query_tokens = self.init_Qformer(
+            num_query_token, self.visual_encoder.num_features, cross_attention_freq
+        )
+        self.text_Qformer, self.text_query_tokens = self.init_Qformer(
+            num_query_token, self.visual_encoder.num_features, cross_attention_freq
+        )
 
-        self.vision_proj = nn.Linear(self.Qformer.config.hidden_size, embed_dim)
-        self.text_proj = nn.Linear(self.Qformer.config.hidden_size, embed_dim)
+        self._prepare_qformer(self.Qformer)
+        self._prepare_qformer(self.ref_Qformer)
+        self._prepare_qformer(self.text_Qformer)
 
-        self.itm_head = nn.Linear(self.Qformer.config.hidden_size, 2)
+        hidden_size = self.Qformer.config.hidden_size
+        self.vision_proj = nn.Linear(hidden_size, embed_dim)
+        self.ref_proj = nn.Linear(hidden_size, embed_dim)
+        self.text_proj = nn.Linear(hidden_size, embed_dim)
+        self.query_fusion = nn.Linear(embed_dim * 2, embed_dim)
+        self._initialize_separate_qformers()
+
+        self.itm_head = nn.Linear(hidden_size, 2)
 
         self.temp = nn.Parameter(0.07 * torch.ones([]))
 
         self.max_txt_len = max_txt_len
 
-    def forward(self, ref_images, tar_images, sentences, negative_images, use_temp):
-        device = ref_images.device
-        batch_size = ref_images.shape[0]
+    def _prepare_qformer(self, qformer):
+        qformer.resize_token_embeddings(len(self.tokenizer))
+        state_dict = qformer.state_dict()
+        for name, param in qformer.named_parameters():
+            if "_query" in name:
+                key_orig = name.replace("_query", "")
+                param.data.copy_(state_dict[key_orig])
 
+    @torch.no_grad()
+    def _initialize_separate_qformers(self):
+        self.ref_Qformer.load_state_dict(self.Qformer.state_dict())
+        self.text_Qformer.load_state_dict(self.Qformer.state_dict())
+        self.ref_query_tokens.copy_(self.query_tokens)
+        self.text_query_tokens.copy_(self.query_tokens)
+        self.ref_proj.load_state_dict(self.vision_proj.state_dict())
+
+        embed_dim = self.query_fusion.out_features
+        self.query_fusion.weight.zero_()
+        self.query_fusion.weight[:, :embed_dim].copy_(
+            torch.eye(embed_dim, device=self.query_fusion.weight.device) * 0.5
+        )
+        self.query_fusion.weight[:, embed_dim:].copy_(
+            torch.eye(embed_dim, device=self.query_fusion.weight.device) * 0.5
+        )
+        self.query_fusion.bias.zero_()
+
+    def load_from_pretrained(self, url_or_filename, **kwargs):
+        message = super().load_from_pretrained(url_or_filename, **kwargs)
+        self._initialize_separate_qformers()
+        return message
+
+    def _encode_image_queries(self, images, qformer, query_tokens):
+        with self.maybe_autocast():
+            image_embedding = self.ln_vision(self.visual_encoder(images))
+        image_embedding = image_embedding.float()
+        image_atts = torch.ones(
+            image_embedding.size()[:-1], dtype=torch.long, device=images.device
+        )
+        expanded_query_tokens = query_tokens.expand(image_embedding.shape[0], -1, -1)
+        query_output = qformer.bert(
+            query_embeds=expanded_query_tokens,
+            encoder_hidden_states=image_embedding,
+            encoder_attention_mask=image_atts,
+            return_dict=True,
+        )
+        return query_output.last_hidden_state
+
+    def _encode_query_features(self, ref_images, sentences, device, normalize=True):
         text_tokens = self.tokenizer(
             sentences,
             padding="max_length",
@@ -106,69 +161,44 @@ class Blip2QuRe(Blip2Base):
             return_tensors="pt",
         ).to(device)
 
-        # Query Embeddings
-        with self.maybe_autocast():
-            ref_image_embedding = self.ln_vision(self.visual_encoder(ref_images))
-        ref_image_embedding = ref_image_embedding.float()
-        ref_image_embedding_atts = torch.ones(ref_image_embedding.size()[:-1], dtype=torch.long).to(device)
+        ref_query_embeds = self._encode_image_queries(
+            ref_images, self.ref_Qformer, self.ref_query_tokens
+        )
+        ref_features = self.ref_proj(ref_query_embeds).mean(dim=1)
 
-        query_tokens = self.query_tokens.expand(ref_image_embedding.shape[0], -1, -1)
-        query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(device)
-        attention_mask = torch.cat([query_atts, text_tokens.attention_mask], dim=1)
-
-        query_output = self.Qformer.bert(
-                text_tokens.input_ids,
-                query_embeds=query_tokens,
-                attention_mask=attention_mask,
-                encoder_hidden_states=ref_image_embedding,
-                encoder_attention_mask=ref_image_embedding_atts,
-                return_dict=True,
-            )
-
-        query_embeds = query_output.last_hidden_state[:, : query_tokens.size(1), :]
-        projected_query = self.text_proj(query_embeds).mean(dim=1)
-        # projected_query = projected_query.mean(dim=1)
-
-        # Target & Negative Embeddings
-        with self.maybe_autocast():
-            tar_image_embedding = self.ln_vision(self.visual_encoder(tar_images))
-            neg_image_embedding = self.ln_vision(self.visual_encoder(negative_images))
-
-        tar_image_embedding = tar_image_embedding.float()
-        tar_image_atts = torch.ones(
-            tar_image_embedding.size()[:-1], dtype=torch.long
-        ).to(self.device)
-
-        tar_query_output = self.Qformer.bert(
-            query_embeds=query_tokens,
-            encoder_hidden_states=tar_image_embedding,
-            encoder_attention_mask=tar_image_atts,
+        text_output = self.text_Qformer.bert(
+            text_tokens.input_ids,
+            attention_mask=text_tokens.attention_mask,
             return_dict=True,
         )
-        tar_image_embeds = tar_query_output.last_hidden_state
-
-        neg_image_embedding = neg_image_embedding.float()
-        neg_image_atts = torch.ones(
-            neg_image_embedding.size()[:-1], dtype=torch.long
-        ).to(self.device)
-        # neg_query_tokens = self.query_tokens.expand(
-        #     neg_image_embedding.shape[0], -1, -1
-        # )
-
-        neg_query_output = self.Qformer.bert(
-            query_embeds=query_tokens,
-            encoder_hidden_states=neg_image_embedding,
-            encoder_attention_mask=neg_image_atts,
-            return_dict=True,
+        text_mask = text_tokens.attention_mask.unsqueeze(-1).to(
+            text_output.last_hidden_state.dtype
         )
-        neg_image_embeds = neg_query_output.last_hidden_state
+        text_hidden = (text_output.last_hidden_state * text_mask).sum(dim=1)
+        text_hidden = text_hidden / text_mask.sum(dim=1).clamp_min(1)
+        text_features = self.text_proj(text_hidden)
 
-        tar_projected_image = self.vision_proj(tar_image_embeds)
-        neg_projected_image = self.vision_proj(neg_image_embeds)
+        query_features = self.query_fusion(
+            torch.cat([ref_features, text_features], dim=-1)
+        )
+        if normalize:
+            query_features = F.normalize(query_features, p=2, dim=-1)
+        return query_features
 
-        projected_query = F.normalize(projected_query, p=2, dim=-1)
-        tar_projected_image = F.normalize(tar_projected_image, p=2, dim=-1)
-        neg_projected_image = F.normalize(neg_projected_image, p=2, dim=-1)
+    def _encode_target_features(self, images):
+        target_query_embeds = self._encode_image_queries(
+            images, self.Qformer, self.query_tokens
+        )
+        target_features = self.vision_proj(target_query_embeds)
+        return F.normalize(target_features, p=2, dim=-1)
+
+    def forward(self, ref_images, tar_images, sentences, negative_images, use_temp):
+        device = ref_images.device
+        projected_query = self._encode_query_features(
+            ref_images, sentences, device, normalize=True
+        )
+        tar_projected_image = self._encode_target_features(tar_images)
+        neg_projected_image = self._encode_target_features(negative_images)
 
         scores_1 = torch.bmm(tar_projected_image, projected_query.unsqueeze(-1))
         score_1, _ = torch.max(scores_1, dim=1)
@@ -185,133 +215,56 @@ class Blip2QuRe(Blip2Base):
 
     @torch.no_grad()
     def extract_target_features(self, dataloader, use_temp, device):
-        feature_dim = 256
-        index_features = torch.empty((0, 32, feature_dim)).to(device, non_blocking=True)
+        index_features = torch.empty(
+            (0, self.query_tokens.shape[1], self.vision_proj.out_features),
+            device=device,
+        )
         index_names = []
 
         for images, names in tqdm(dataloader, desc="Extract Sample Features"):
             images = images.to(device, non_blocking=True)
-
-            with self.maybe_autocast():
-                img_embedding = self.ln_vision(self.visual_encoder(images))
-
-            img_embedding = img_embedding.float()
-            img_atts = torch.ones(img_embedding.size()[:-1], dtype=torch.long).to(device)
-            query_tokens = self.query_tokens.expand(img_embedding.shape[0], -1, -1)
-            query_output = self.Qformer.bert(
-                query_embeds=query_tokens,
-                encoder_hidden_states=img_embedding,
-                encoder_attention_mask=img_atts,
-                return_dict=True,
-            )
-            batch_features = self.vision_proj(query_output.last_hidden_state)
-            batch_features = F.normalize(batch_features, dim=-1)
+            batch_features = self._encode_target_features(images)
             index_features = torch.vstack((index_features, batch_features))
             index_names.extend(names)
         return index_features.cpu(), index_names
 
-
     @torch.no_grad()
     def extract_query_features_fiq(self, dataloader, use_temp, txt_processors, device):
-
-        feature_dim = 256
-
-        # Initialize predicted features, target_names, group_members and reference_names
-        predicted_features = torch.empty((0, feature_dim)).to(device, non_blocking=True)
+        predicted_features = torch.empty(
+            (0, self.vision_proj.out_features), device=device
+        )
         target_names = []
 
-        for ref_images, sentences, target_name in tqdm(dataloader, desc="Extract Query Features"):  # Load data
+        for ref_images, sentences, target_name in tqdm(
+            dataloader, desc="Extract Query Features"
+        ):
             sentences = [txt_processors["eval"](caption) for caption in sentences]
-            text_tokens = self.tokenizer(
-                sentences,
-                padding="max_length",
-                truncation=True,
-                max_length=self.max_txt_len,
-                return_tensors="pt",
-            ).to(device)
-
             ref_images = ref_images.to(device, non_blocking=True)
-            # modifiers = modifiers.to(device, non_blocking=True)
-            # attn_mask = attn_mask.to(device, non_blocking=True)
-
-            with self.maybe_autocast():
-                ref_image_embedding = self.ln_vision(self.visual_encoder(ref_images))
-            ref_image_embedding = ref_image_embedding.float()
-            ref_image_embedding_atts = torch.ones(ref_image_embedding.size()[:-1], dtype=torch.long).to(device)
-
-            query_tokens = self.query_tokens.expand(ref_image_embedding.shape[0], -1, -1)
-            query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(device)
-            attention_mask = torch.cat([query_atts, text_tokens.attention_mask], dim=1)
-
-            query_output = self.Qformer.bert(
-                text_tokens.input_ids,
-                query_embeds=query_tokens,
-                attention_mask=attention_mask,
-                encoder_hidden_states=ref_image_embedding,
-                encoder_attention_mask=ref_image_embedding_atts,
-                return_dict=True,
+            query_features = self._encode_query_features(
+                ref_images, sentences, device, normalize=True
             )
-
-            query_embeds = query_output.last_hidden_state[:, : query_tokens.size(1), :]
-            query_features = self.text_proj(query_embeds).mean(dim=1)
-            # query_features = query_features.mean(dim=1)
-            query_features = F.normalize(query_features, dim=-1)
-
             predicted_features = torch.vstack((predicted_features, query_features))
             target_names.extend(target_name)
-
         return predicted_features.cpu(), target_names
-
 
     @torch.no_grad()
     def extract_query_features_cirr(self, dataloader, use_temp, txt_processors, device):
-
-        feature_dim = 256
-
-        # Initialize predicted features, target_names, group_members and reference_names
-        predicted_features = torch.empty((0, feature_dim)).to(device, non_blocking=True)
+        predicted_features = torch.empty(
+            (0, self.vision_proj.out_features), device=device
+        )
         group_members = []
         reference_names = []
         pairs_ids = []
 
-        for ref_names, ref_images, sentences, pair_id, batch_group_members in tqdm(dataloader, desc="Extract Query Features"):  # Load data
-            # text_inputs = clip.tokenize(captions).to(device, non_blocking=True)
+        for ref_names, ref_images, sentences, pair_id, batch_group_members in tqdm(
+            dataloader, desc="Extract Query Features"
+        ):
             sentences = [txt_processors["eval"](caption) for caption in sentences]
-            text_tokens = self.tokenizer(
-                sentences,
-                padding="max_length",
-                truncation=True,
-                max_length=self.max_txt_len,
-                return_tensors="pt",
-            ).to(device)
-
             batch_group_members = np.array(batch_group_members).tolist()
             ref_images = ref_images.to(device, non_blocking=True)
-
-            with self.maybe_autocast():
-                ref_image_embedding = self.ln_vision(self.visual_encoder(ref_images))
-            ref_image_embedding = ref_image_embedding.float()
-            ref_image_embedding_atts = torch.ones(ref_image_embedding.size()[:-1], dtype=torch.long).to(device)
-
-            query_tokens = self.query_tokens.expand(ref_image_embedding.shape[0], -1, -1)
-            query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(device)
-            attention_mask = torch.cat([query_atts, text_tokens.attention_mask], dim=1)
-
-            query_output = self.Qformer.bert(
-                text_tokens.input_ids,
-                query_embeds=query_tokens,
-                attention_mask=attention_mask,
-                encoder_hidden_states=ref_image_embedding,
-                encoder_attention_mask=ref_image_embedding_atts,
-                return_dict=True,
+            query_features = self._encode_query_features(
+                ref_images, sentences, device, normalize=use_temp
             )
-
-            query_embeds = query_output.last_hidden_state[:, : query_tokens.size(1), :]
-            query_features = self.text_proj(query_embeds).mean(dim=1)
-            # query_features = query_features.mean(dim=1)
-            if use_temp:
-                query_features = F.normalize(query_features, dim=-1)
-
             predicted_features = torch.vstack((predicted_features, query_features))
             reference_names.extend(ref_names)
             group_members.extend(batch_group_members)
@@ -321,112 +274,45 @@ class Blip2QuRe(Blip2Base):
 
     @torch.no_grad()
     def extract_query_features_circo(self, dataloader, use_temp, txt_processors, device):
-
-        feature_dim = 256
-
-        # Initialize predicted features, target_names, group_members and reference_names
-        predicted_features = torch.empty((0, feature_dim)).to(device, non_blocking=True)
+        predicted_features = torch.empty(
+            (0, self.vision_proj.out_features), device=device
+        )
         query_ids_list = []
 
-        for batch in tqdm(dataloader, desc="Extract Query Features"):  # Load data
+        for batch in tqdm(dataloader, desc="Extract Query Features"):
             ref_images = batch['reference_img']
             relative_captions = batch['relative_caption']
             query_ids = batch['query_id']
 
             sentences = [f"a photo of $ that {caption}" for caption in relative_captions]
-
             sentences = [txt_processors["eval"](caption) for caption in sentences]
-            text_tokens = self.tokenizer(
-                sentences,
-                padding="max_length",
-                truncation=True,
-                max_length=self.max_txt_len,
-                return_tensors="pt",
-            ).to(device)
-
             ref_images = ref_images.to(device, non_blocking=True)
-
-            with self.maybe_autocast():
-                ref_image_embedding = self.ln_vision(self.visual_encoder(ref_images))
-            ref_image_embedding = ref_image_embedding.float()
-            ref_image_embedding_atts = torch.ones(ref_image_embedding.size()[:-1], dtype=torch.long).to(device)
-
-            query_tokens = self.query_tokens.expand(ref_image_embedding.shape[0], -1, -1)
-            query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(device)
-            attention_mask = torch.cat([query_atts, text_tokens.attention_mask], dim=1)
-
-            query_output = self.Qformer.bert(
-                text_tokens.input_ids,
-                query_embeds=query_tokens,
-                attention_mask=attention_mask,
-                encoder_hidden_states=ref_image_embedding,
-                encoder_attention_mask=ref_image_embedding_atts,
-                return_dict=True,
+            query_features = self._encode_query_features(
+                ref_images, sentences, device, normalize=use_temp
             )
-
-            query_embeds = query_output.last_hidden_state[:, : query_tokens.size(1), :]
-            query_features = self.text_proj(query_embeds).mean(dim=1)
-            # query_features = query_features.mean(dim=1)
-            if use_temp:
-                query_features = F.normalize(query_features, dim=-1)
-
             predicted_features = torch.vstack((predicted_features, query_features))
             query_ids_list.extend(query_ids)
-
-
         return predicted_features.cpu(), query_ids_list
 
     @torch.no_grad()
     def extract_query_features_cirr_val(self, dataloader, use_temp, txt_processors, device):
-
-        feature_dim = 256
-
-        # Initialize predicted features, target_names, group_members and reference_names
-        predicted_features = torch.empty((0, feature_dim)).to(device, non_blocking=True)
+        predicted_features = torch.empty(
+            (0, self.vision_proj.out_features), device=device
+        )
         group_members = []
         reference_names = []
         pairs_ids = []
         target_names = []
 
-        for ref_names, ref_images, targ_names, sentences, pair_id, batch_group_members in tqdm(dataloader,
-                                                                                   desc="Extract Query Features"):  # Load data
-            # text_inputs = clip.tokenize(captions).to(device, non_blocking=True)
+        for ref_names, ref_images, targ_names, sentences, pair_id, batch_group_members in tqdm(
+            dataloader, desc="Extract Query Features"
+        ):
             sentences = [txt_processors["eval"](caption) for caption in sentences]
-            text_tokens = self.tokenizer(
-                sentences,
-                padding="max_length",
-                truncation=True,
-                max_length=self.max_txt_len,
-                return_tensors="pt",
-            ).to(device)
-
             batch_group_members = np.array(batch_group_members).tolist()
             ref_images = ref_images.to(device, non_blocking=True)
-
-            with self.maybe_autocast():
-                ref_image_embedding = self.ln_vision(self.visual_encoder(ref_images))
-            ref_image_embedding = ref_image_embedding.float()
-            ref_image_embedding_atts = torch.ones(ref_image_embedding.size()[:-1], dtype=torch.long).to(device)
-
-            query_tokens = self.query_tokens.expand(ref_image_embedding.shape[0], -1, -1)
-            query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(device)
-            attention_mask = torch.cat([query_atts, text_tokens.attention_mask], dim=1)
-
-            query_output = self.Qformer.bert(
-                text_tokens.input_ids,
-                query_embeds=query_tokens,
-                attention_mask=attention_mask,
-                encoder_hidden_states=ref_image_embedding,
-                encoder_attention_mask=ref_image_embedding_atts,
-                return_dict=True,
+            query_features = self._encode_query_features(
+                ref_images, sentences, device, normalize=use_temp
             )
-
-            query_embeds = query_output.last_hidden_state[:, : query_tokens.size(1), :]
-            query_features = self.text_proj(query_embeds).mean(dim=1)
-            # query_features = query_features.mean(dim=1)
-            if use_temp:
-                query_features = F.normalize(query_features, dim=-1)
-
             predicted_features = torch.vstack((predicted_features, query_features))
             reference_names.extend(ref_names)
             target_names.extend(targ_names)
@@ -443,9 +329,10 @@ class Blip2QuRe(Blip2Base):
 
     @torch.no_grad()
     def extract_target_image_features_fiq(self, dataloader, device):
-
-        feature_dim = 256
-        index_features = torch.empty((0, 32, feature_dim)).to(device, non_blocking=True)
+        index_features = torch.empty(
+            (0, self.query_tokens.shape[1], self.vision_proj.out_features),
+            device=device,
+        )
         target_name_list = []
         for ref_images, sentences, target_names in dataloader:  # Load data
             target_images = []
@@ -456,20 +343,7 @@ class Blip2QuRe(Blip2Base):
             target_image = torch.cat(target_images, dim=0)
             target_image = target_image.to(device, non_blocking=True)
 
-            with self.maybe_autocast():
-                target_image_embedding = self.ln_vision(self.visual_encoder(target_image))
-
-            target_image_embedding = target_image_embedding.float()
-            target_image_atts = torch.ones(target_image_embedding.size()[:-1], dtype=torch.long).to(device)
-            query_tokens = self.query_tokens.expand(target_image_embedding.shape[0], -1, -1)
-            query_output = self.Qformer.bert(
-                query_embeds=query_tokens,
-                encoder_hidden_states=target_image_embedding,
-                encoder_attention_mask=target_image_atts,
-                return_dict=True,
-            )
-            batch_features = self.vision_proj(query_output.last_hidden_state)
-            batch_features = F.normalize(batch_features, dim=-1)
+            batch_features = self._encode_target_features(target_image)
             index_features = torch.vstack((index_features, batch_features))
             target_name_list.extend(target_names)
 
@@ -503,10 +377,6 @@ class Blip2QuRe(Blip2Base):
         model.load_checkpoint_from_config(cfg)
 
         return model
-
-
-
-
 
 
 

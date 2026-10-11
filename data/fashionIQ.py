@@ -199,21 +199,16 @@ class FashionIQDataset(Dataset):
         predicted_features, _ = model.extract_query_features_fiq(query_dataloader, configs['use_temp'], txt_processors, device)
         index_features, index_names = model.extract_target_features(sample_dataloader, configs['use_temp'], device)
 
-        scores = model.score(predicted_features, index_features)
-
-        for index in tqdm(range(len(self.triplets)), desc=f"Reranking with score and image similarity"):
-            image_captions = self.triplets[index]['captions']
-            reference_name = self.triplets[index]['candidate']
+        def select_hard_images(index, cur_query_scores):
+            triplet = self.triplets[index]
             target_name = self.triplets[index]['target']
-            cur_dress_type = self.triplets[index]['dress_type']
+            cur_dress_type = triplet['dress_type']
 
-            cur_query_scores = scores[index]
             cur_query_cur_dress_type_scores = cur_query_scores[self.dress_type_indices_relative[cur_dress_type]]
             cur_query_score_sorted_indices = torch.argsort(cur_query_cur_dress_type_scores, dim=-1,
                                                            descending=True).cpu()
-            
+
             cur_dress_type_target_images = [triplet['target'] for triplet in self.domain_triplets[cur_dress_type]]
-            # cur_dress_type_target_images = [image for image in self.domain_image_names[cur_dress_type]]
             target_index = cur_dress_type_target_images.index(target_name)
             sorted_indices = [i for i in cur_query_score_sorted_indices.tolist()]
             target_sorted_index = sorted_indices.index(target_index)
@@ -230,6 +225,8 @@ class FashionIQDataset(Dataset):
             diff_sorted_indices = np.argsort(differences)
 
             idx = 0
+            start_of_hard_negatives = None
+            end_of_hard_negatives = None
             while idx < len(diff_sorted_indices) - 1:
                 idx1 = diff_sorted_indices[idx]
                 idx2 = diff_sorted_indices[idx + 1]
@@ -246,19 +243,43 @@ class FashionIQDataset(Dataset):
                     # diff_sorted_indices = [idx_ for idx_ in diff_sorted_indices if idx_ > idx2]
 
             # Negative set : start_of_false_negatives + 1 ~ end_of_false_negatives
-            top_k_score_indices = [i for i in cur_query_score_sorted_indices.tolist()][start_of_hard_negatives + 1:end_of_hard_negatives + 1]
-
-            if len(top_k_score_indices) == 0:
-                assert 0, "Empty negative set is defined"
-
-
-            if len(top_k_score_indices) != 0:
-                cur_dress_type_target_images = [triplet['target'] for triplet in self.domain_triplets[cur_dress_type]]
-                # cur_dress_type_target_images = [image for image in self.domain_image_names[cur_dress_type]]
-                topk_image_names = list(set([cur_dress_type_target_images[i] for i in top_k_score_indices if cur_dress_type_target_images[i] != target_name]))
+            if start_of_hard_negatives is None:
+                top_k_score_indices = sorted_indices[target_sorted_index + 1:target_sorted_index + 2]
             else:
-                assert 0, "Empty negative set is defined"
-            self.hard_images.append(topk_image_names)
+                top_k_score_indices = sorted_indices[
+                    start_of_hard_negatives + 1:end_of_hard_negatives + 1
+                ]
+
+            topk_image_names = list(set(
+                cur_dress_type_target_images[i]
+                for i in top_k_score_indices
+                if cur_dress_type_target_images[i] != target_name
+            ))
+            if not topk_image_names:
+                topk_image_names = list(dict.fromkeys(
+                    image_name for image_name in (
+                        cur_dress_type_target_images[i] for i in sorted_indices
+                    )
+                    if image_name != target_name
+                ))[:1]
+            if not topk_image_names:
+                raise RuntimeError(
+                    f"Could not select a hard negative for FashionIQ query {index} "
+                    f"({cur_dress_type}, target={target_name})"
+                )
+            return topk_image_names
+
+        score_batch_size = 64
+        for batch_start in tqdm(
+            range(0, len(self.triplets), score_batch_size),
+            desc="Reranking with score and image similarity",
+        ):
+            batch_end = min(batch_start + score_batch_size, len(self.triplets))
+            scores = model.score(
+                predicted_features[batch_start:batch_end], index_features
+            )
+            for offset, index in enumerate(range(batch_start, batch_end)):
+                self.hard_images.append(select_hard_images(index, scores[offset]))
 
         if configs["experiment_description"] != 'debug':
             sizes = [len(sublist) for sublist in self.hard_images]

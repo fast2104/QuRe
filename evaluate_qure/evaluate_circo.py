@@ -29,7 +29,7 @@ def main():
     print(f"Pretrained Model Path : {MS_pretrained_path}")
 
     model, txt_processors = create_qure_models(configs, device)
-    msg = model.load_state_dict(torch.load(f'{MS_pretrained_path}/model.pth', map_location=device), strict=False)
+    msg = model.load_state_dict(torch.load(f'{MS_pretrained_path}/model.pth', map_location=device), strict=True)
     model.to(device)
     model.eval()
 

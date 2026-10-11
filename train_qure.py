@@ -30,13 +30,15 @@ def main():
 
     max_epochs = configs['epoch']
 
-    # Auto-resume from latest experiment checkpoint if available
-    latest_ckpt = "/home/iec/sontung_veryIMPORTANT/QuRe/experiments/debug_2026-10-08_0/model.pth"
     start_epoch = 0
-    if os.path.exists(latest_ckpt):
-        print(f" Found existing checkpoint at {latest_ckpt}! Loading model weights...")
-        model.load_state_dict(torch.load(latest_ckpt, map_location=device))
-        log_file = os.path.join(os.path.dirname(latest_ckpt), "log.txt")
+    checkpoint_path = configs.get("checkpoint_path", "")
+    if checkpoint_path:
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(f"Training checkpoint not found: {checkpoint_path}")
+        print(f" Loading training checkpoint from {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint, strict=True)
+        log_file = os.path.join(os.path.dirname(checkpoint_path), "log.txt")
         if os.path.exists(log_file):
             with open(log_file, "r") as f:
                 lines = [line.strip() for line in f if "Epoch" in line]
