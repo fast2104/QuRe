@@ -26,6 +26,7 @@ from lavis.models.blip2_models.blip2 import (
     compute_sim_matrix,
     disabled_train,
 )
+from lavis.models.blip2_models.prompt_flow import PlanarPromptFlow
 from lavis.models.blip_models.blip_outputs import BlipOutput, BlipOutputFeatures
 
 
@@ -46,7 +47,7 @@ class Blip2QuRe(Blip2Base):
 
     PRETRAINED_MODEL_CONFIG_DICT = {
         "pretrain": "configs/models/blip2/blip2_pretrain.yaml",
-        "pretrain_vitL": "configs/models/blip2/blip2_pretrain_vitL.yaml",
+        "pretrain_vitL": "configs/models/blip2/blip2_qure.yaml",
         "coco": "configs/models/blip2/blip2_coco.yaml",
     }
 
@@ -62,6 +63,8 @@ class Blip2QuRe(Blip2Base):
         cross_attention_freq=2,
         embed_dim=256,
         max_txt_len=32,
+        num_prompt_flows=10,
+        prompt_flow_kl_weight=0.01,
     ):
         super().__init__()
 
@@ -93,6 +96,16 @@ class Blip2QuRe(Blip2Base):
         self._prepare_qformer(self.text_Qformer)
 
         hidden_size = self.Qformer.config.hidden_size
+        self.ref_prompt_flow = PlanarPromptFlow(
+            vision_dim=self.visual_encoder.num_features,
+            hidden_dim=hidden_size,
+            num_prompts=num_query_token,
+            num_flows=num_prompt_flows,
+        )
+        self.prompt_flow_kl_weight = prompt_flow_kl_weight
+        self.prompt_flow_kl = None
+        self.ref_query_tokens.requires_grad_(False)
+
         self.vision_proj = nn.Linear(hidden_size, embed_dim)
         self.ref_proj = nn.Linear(hidden_size, embed_dim)
         self.text_proj = nn.Linear(hidden_size, embed_dim)
@@ -136,14 +149,21 @@ class Blip2QuRe(Blip2Base):
         self._initialize_separate_qformers()
         return message
 
-    def _encode_image_queries(self, images, qformer, query_tokens):
+    def _encode_image_queries(self, images, qformer, query_tokens, prompt_flow=None):
         with self.maybe_autocast():
             image_embedding = self.ln_vision(self.visual_encoder(images))
         image_embedding = image_embedding.float()
         image_atts = torch.ones(
             image_embedding.size()[:-1], dtype=torch.long, device=images.device
         )
-        expanded_query_tokens = query_tokens.expand(image_embedding.shape[0], -1, -1)
+        if prompt_flow is None:
+            expanded_query_tokens = query_tokens.expand(
+                image_embedding.shape[0], -1, -1
+            )
+        else:
+            expanded_query_tokens, self.prompt_flow_kl = prompt_flow(
+                image_embedding.mean(dim=1)
+            )
         query_output = qformer.bert(
             query_embeds=expanded_query_tokens,
             encoder_hidden_states=image_embedding,
@@ -162,7 +182,10 @@ class Blip2QuRe(Blip2Base):
         ).to(device)
 
         ref_query_embeds = self._encode_image_queries(
-            ref_images, self.ref_Qformer, self.ref_query_tokens
+            ref_images,
+            self.ref_Qformer,
+            self.ref_query_tokens,
+            prompt_flow=self.ref_prompt_flow,
         )
         ref_features = self.ref_proj(ref_query_embeds).mean(dim=1)
 
@@ -192,25 +215,20 @@ class Blip2QuRe(Blip2Base):
         target_features = self.vision_proj(target_query_embeds)
         return F.normalize(target_features, p=2, dim=-1)
 
-    def forward(self, ref_images, tar_images, sentences, negative_images, use_temp):
+    def forward(self, ref_images, tar_images, sentences, use_temp):
         device = ref_images.device
         projected_query = self._encode_query_features(
             ref_images, sentences, device, normalize=True
         )
         tar_projected_image = self._encode_target_features(tar_images)
-        neg_projected_image = self._encode_target_features(negative_images)
 
-        scores_1 = torch.bmm(tar_projected_image, projected_query.unsqueeze(-1))
-        score_1, _ = torch.max(scores_1, dim=1)
-
-        scores_2 = torch.bmm(neg_projected_image, projected_query.unsqueeze(-1))
-        score_2, _ = torch.max(scores_2, dim=1)
+        scores = torch.einsum(
+            "bqd,cd->bcq", tar_projected_image, projected_query
+        ).amax(dim=-1)
 
         if use_temp:
-            score_1 = score_1 / self.temp
-            score_2 = score_2 / self.temp
+            scores = scores / self.temp.clamp_min(1e-6)
 
-        scores = torch.stack([score_1, score_2], dim=1).squeeze(-1)
         return scores
 
     @torch.no_grad()
@@ -362,6 +380,8 @@ class Blip2QuRe(Blip2Base):
         freeze_vit = cfg.get("freeze_vit", True)
 
         max_txt_len = cfg.get("max_txt_len", 32)
+        num_prompt_flows = cfg.get("num_prompt_flows", 10)
+        prompt_flow_kl_weight = cfg.get("prompt_flow_kl_weight", 0.01)
 
         model = cls(
             vit_model=vit_model,
@@ -373,11 +393,10 @@ class Blip2QuRe(Blip2Base):
             num_query_token=num_query_token,
             cross_attention_freq=cross_attention_freq,
             max_txt_len=max_txt_len,
+            num_prompt_flows=num_prompt_flows,
+            prompt_flow_kl_weight=prompt_flow_kl_weight,
         )
         model.load_checkpoint_from_config(cfg)
 
         return model
-
-
-
 

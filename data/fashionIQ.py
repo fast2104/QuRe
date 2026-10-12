@@ -1,20 +1,12 @@
-import copy
 import json
 import numpy as np
 import os
-import random
-from tqdm import tqdm
 from typing import List
 from pathlib import Path
-import wandb
-import math
 
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from data.utils import targetpad_transform, _get_img_from_path
 from data.abc import AbstractBaseDataset
-from data.collate_fns import BLIPPaddingCollateFunctionTest4FIQ
-import torch
-from torch.nn import functional as F
 
 import PIL
 import PIL.Image
@@ -54,7 +46,6 @@ class FashionIQDataset(Dataset):
         self.split = split
         self.config = config
         self.dress_types = dress_types
-        self.negative = 'random'
 
         if mode not in ['relative', 'classic']:
             raise ValueError("mode should be in ['relative', 'classic']")
@@ -66,35 +57,15 @@ class FashionIQDataset(Dataset):
 
         # get triplets made by (reference_image, target_image, a pair of relative captions)
         self.triplets: List[dict] = []
-        self.domain_triplets = dict()
-        self.dress_type_indices_relative = dict()
         for dress_type in dress_types:
             with open(base_path /  'captions' / f'cap.{dress_type}.{split}.json') as f:
-                triplets = json.load(f)
-
-                start_idx = len(self.triplets)
-                for triplet in triplets:
-                    triplet['dress_type'] = dress_type
-                self.triplets.extend(triplets)
-                end_idx = len(self.triplets)
-                self.dress_type_indices_relative[dress_type] = list(range(start_idx, end_idx))
-
-                self.domain_triplets[dress_type] = triplets
+                self.triplets.extend(json.load(f))
 
         # get the image names
-        self.domain_image_names = dict()
         self.image_names: list = []
-        self.dress_type_indices_classic = dict()
         for dress_type in dress_types:
             with open(base_path / 'image_splits' / f'split.{dress_type}.{split}.json') as f:
-                images = json.load(f)
-                start_idx = len(self.image_names)
-                self.image_names.extend(images)
-                end_idx = len(self.image_names)
-                self.dress_type_indices_classic[dress_type] = list(range(start_idx, end_idx))
-                self.domain_image_names[dress_type] = images
-
-        self.hard_images = []
+                self.image_names.extend(json.load(f))
 
         print(f"FashionIQ {split} - {dress_types} dataset in {mode} mode initialized")
 
@@ -115,44 +86,7 @@ class FashionIQDataset(Dataset):
                     target_image = self.preprocess(PIL.Image.open(target_image_path))
                     # target_image = _get_img_from_path(target_image_path, self.preprocess)
 
-                    cur_dress_type = self.triplets[index]['dress_type']
-                    # self.non_target_pool = self.domain_image_names[cur_dress_type]
-                    self.non_target_pool = [triplet['target'] for triplet in self.domain_triplets[cur_dress_type]]
-
-                    if self.negative == 'random': # random negative sampling
-                        cur_non_target_pool = [name for name in self.non_target_pool if name != target_name]
-                        negative_name = random.choice(cur_non_target_pool) # Sample from Target pool (!= target)
-                        negative_targ_img_path = base_path / 'images' / f"{negative_name}.png"
-                        negative_target_img = self.preprocess(PIL.Image.open(negative_targ_img_path))
-                        # negative_target_img = _get_img_from_path(negative_targ_img_path, self.preprocess)
-                    elif self.negative == 'random_rerank': # hard negative sampling after reranking
-                        if index not in self.negative_selection_history:
-                            self.negative_selection_history[index] = []
-
-                        if len(self.hard_images[index]) == len(self.negative_selection_history[index]):
-                            self.negative_selection_history[index] = []
-
-                        while True:
-                            negative_name = random.choice(self.hard_images[index])
-                            if negative_name not in self.negative_selection_history[index]:
-                                break  # Stop resampling once a unique negative is found
-                        # negative_name = random.choice(self.hard_images[index])
-                        negative_targ_img_path = base_path / 'images' / f"{negative_name}.png"
-                        negative_target_img = self.preprocess(PIL.Image.open(negative_targ_img_path))
-
-                        self.negative_selection_history[index].append(negative_name)
-
-                    # elif self.negative == 'rerank':
-                    #     negative_target_img = []
-                    #     for negative_name in self.hard_images[index]:
-                    #         negative_targ_img_path = base_path / 'images' / f"{negative_name}.png"
-                    #         negative_target_img_ = self.preprocess(PIL.Image.open(negative_targ_img_path))
-                    #         negative_target_img.append(negative_target_img_)
-                    #     # negative_target_img = torch.stack(negative_target_img, dim=0)
-                    else:
-                        raise ValueError("Undefined Negative Sampling Method")
-
-                    return reference_image, target_image, negative_target_img, target_name, rel_caption
+                    return reference_image, target_image, target_name, rel_caption
 
                 elif self.split == 'val':
                     reference_image_path = base_path / 'images' / f"{reference_name}.png"
@@ -186,128 +120,6 @@ class FashionIQDataset(Dataset):
         else:
             raise ValueError("mode should be in ['relative', 'classic']")
 
-    @torch.no_grad()
-    def rerank_score(self, model, device, txt_processors, configs, epoch):
-        self.negative_selection_history = dict()
-        self.negative = configs['negative']
-        self.hard_images = []
-        model.eval()
-
-        sample_dataloader = self.get_sample_loader()
-        query_dataloader = self.get_query_loader()
-
-        predicted_features, _ = model.extract_query_features_fiq(query_dataloader, configs['use_temp'], txt_processors, device)
-        index_features, index_names = model.extract_target_features(sample_dataloader, configs['use_temp'], device)
-
-        def select_hard_images(index, cur_query_scores):
-            triplet = self.triplets[index]
-            target_name = self.triplets[index]['target']
-            cur_dress_type = triplet['dress_type']
-
-            cur_query_cur_dress_type_scores = cur_query_scores[self.dress_type_indices_relative[cur_dress_type]]
-            cur_query_score_sorted_indices = torch.argsort(cur_query_cur_dress_type_scores, dim=-1,
-                                                           descending=True).cpu()
-
-            cur_dress_type_target_images = [triplet['target'] for triplet in self.domain_triplets[cur_dress_type]]
-            target_index = cur_dress_type_target_images.index(target_name)
-            sorted_indices = [i for i in cur_query_score_sorted_indices.tolist()]
-            target_sorted_index = sorted_indices.index(target_index)
-
-            score_list = cur_query_cur_dress_type_scores[cur_query_score_sorted_indices]
-            y = np.array(score_list)
-
-            start_index = target_sorted_index + 1
-            scores_after_target = y[start_index:]
-
-            # Step 1: Compute differences
-            differences = np.diff(scores_after_target)  # Differences between consecutive elements
-            # Sort indices by difference values (ascending order)
-            diff_sorted_indices = np.argsort(differences)
-
-            idx = 0
-            start_of_hard_negatives = None
-            end_of_hard_negatives = None
-            while idx < len(diff_sorted_indices) - 1:
-                idx1 = diff_sorted_indices[idx]
-                idx2 = diff_sorted_indices[idx + 1]
-
-                if idx1 > idx2:
-                    idx1, idx2 = idx2, idx1
-                if idx2 - idx1 > configs["consecutive_threshold"]:
-                    # Get the largest and second-largest drop indices
-                    start_of_hard_negatives = idx1 + start_index
-                    end_of_hard_negatives = idx2 + start_index
-                    break
-                else:
-                    idx += 1
-                    # diff_sorted_indices = [idx_ for idx_ in diff_sorted_indices if idx_ > idx2]
-
-            # Negative set : start_of_false_negatives + 1 ~ end_of_false_negatives
-            if start_of_hard_negatives is None:
-                top_k_score_indices = sorted_indices[target_sorted_index + 1:target_sorted_index + 2]
-            else:
-                top_k_score_indices = sorted_indices[
-                    start_of_hard_negatives + 1:end_of_hard_negatives + 1
-                ]
-
-            topk_image_names = list(set(
-                cur_dress_type_target_images[i]
-                for i in top_k_score_indices
-                if cur_dress_type_target_images[i] != target_name
-            ))
-            if not topk_image_names:
-                topk_image_names = list(dict.fromkeys(
-                    image_name for image_name in (
-                        cur_dress_type_target_images[i] for i in sorted_indices
-                    )
-                    if image_name != target_name
-                ))[:1]
-            if not topk_image_names:
-                raise RuntimeError(
-                    f"Could not select a hard negative for FashionIQ query {index} "
-                    f"({cur_dress_type}, target={target_name})"
-                )
-            return topk_image_names
-
-        score_batch_size = 64
-        for batch_start in tqdm(
-            range(0, len(self.triplets), score_batch_size),
-            desc="Reranking with score and image similarity",
-        ):
-            batch_end = min(batch_start + score_batch_size, len(self.triplets))
-            scores = model.score(
-                predicted_features[batch_start:batch_end], index_features
-            )
-            for offset, index in enumerate(range(batch_start, batch_end)):
-                self.hard_images.append(select_hard_images(index, scores[offset]))
-
-        if configs["experiment_description"] != 'debug':
-            sizes = [len(sublist) for sublist in self.hard_images]
-            average_size_negative_set = sum(sizes) / len(sizes)
-            variance = sum((size - average_size_negative_set) ** 2 for size in sizes) / len(sizes)
-            std_dev = math.sqrt(variance)
-
-            wandb.log({'average size of negative set': average_size_negative_set, "epoch": epoch})
-            wandb.log({'std of negative set size': std_dev, "epoch": epoch})
-
-        model.train()
-        print("Done\n")
-
-    def get_sample_loader(self):
-        image_corpus = [triplet['target'] for triplet in self.triplets]
-        # image_corpus = [image for image in self.image_names]
-        sample_dataset = FashionIQSampleDataset(base_path, image_corpus, self.preprocess)
-        collate_fn = BLIPPaddingCollateFunctionTest4FIQ()
-        sample_dataloader = DataLoader(sample_dataset, batch_size=64, shuffle=False, num_workers=16, pin_memory=True, collate_fn=collate_fn)
-
-        return sample_dataloader
-    def get_query_loader(self):
-        query_dataset = FashionIQQueryDataset(base_path, self.triplets, self.preprocess)
-        collate_fn = BLIPPaddingCollateFunctionTest4FIQ()
-        query_dataloader = DataLoader(query_dataset, batch_size=64, shuffle=False, num_workers=16, pin_memory=True, collate_fn=collate_fn)
-
-        return query_dataloader
-
     @classmethod
     def code(cls):
         return 'fashionIQ'
@@ -324,49 +136,6 @@ class FashionIQDataset(Dataset):
     def vocab_path(cls):
         return None
         
-class FashionIQSampleDataset(Dataset):
-    def __init__(self, base_path, image_names, preprocess):
-        self.base_path = base_path
-        self._image_names = image_names
-        self.preprocess = preprocess
-
-    def __len__(self):
-        return len(self._image_names)
-
-    def __getitem__(self, idx):
-        image_name = self._image_names[idx]
-        image_path = base_path / 'images' / f"{image_name}.png"
-        im = PIL.Image.open(image_path)
-        image = self.preprocess(im)
-
-        return image, image_name
-
-
-class FashionIQQueryDataset(Dataset):
-    def __init__(self, base_path, triplets, preprocess):
-        self.base_path = base_path
-        self._triplets = triplets
-        self.preprocess = preprocess
-
-    def __len__(self):
-        return len(self._triplets)
-
-    def __getitem__(self, index):
-        reference_name = self._triplets[index]['candidate']
-        target_name = self._triplets[index]['target']
-        image_captions = self._triplets[index]['captions']
-
-        reference_image_path = base_path / 'images' / f"{reference_name}.png"
-        reference_image = self.preprocess(PIL.Image.open(reference_image_path))
-        # rel_caption = image_captions[0] + " and " + image_captions[1]
-        rel_caption = f"{image_captions[0].strip('.?, ').capitalize()} and {image_captions[1].strip('.?, ')}"
-
-        return target_name, reference_image, rel_caption
-
-
-
-
-
 ##############################################################
 ############## For User Suvery Generation ####################
 ##############################################################

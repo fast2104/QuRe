@@ -88,6 +88,14 @@ Local result sources:
   metrics, but confirm which config fields determine the instantiated model
   before presenting the run as an exact reproduction of the paper's setup.
 
-The official comparison source is
-[arXiv:2507.12416](https://arxiv.org/abs/2507.12416) and its
-[PDF](https://arxiv.org/pdf/2507.12416).
+  The runs above are historical and were produced before the current trainer
+  change. The current trainer uses symmetric in-batch contrastive loss over
+  composed queries and target images, with duplicate target IDs treated as
+  multiple positives. It no longer samples explicit random or reranked hard
+  negative images; other target images in the batch still serve as contrastive
+  comparisons. This objective is a project variant, not the paper's hard-negative
+  training objective, so the historical metrics do not evaluate the new code.
+
+  The official comparison source is
+  [arXiv:2507.12416](https://arxiv.org/abs/2507.12416) and its
+  [PDF](https://arxiv.org/pdf/2507.12416).

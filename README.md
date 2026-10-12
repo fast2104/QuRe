@@ -4,6 +4,8 @@
 Official implementation of **QuRe: Query-Relevant Retrieval through Hard Negative Sampling in Composed Image Retrieval** (*ICML 2025*).  
 [[Paper Link]](https://arxiv.org/abs/2507.12416)
 
+The QuRe model encodes the reference image, relative text, and target image in separate branches. In the reference-image branch, image-conditioned prompts are generated with the planar normalizing-flow module adapted from Bayes-PFL; the target-image branch retains its learned Q-Former query tokens.
+
 
 ## Python Environment
 

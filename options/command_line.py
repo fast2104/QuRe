@@ -104,19 +104,12 @@ parser.add_argument('--model', type=str, default='blip2')
 parser.add_argument('--random_seed', type=int, default=1000)
 parser.add_argument('--init_lr', type=float, default=1e-6, help='learning rate')
 parser.add_argument('--use_temp', type=bool, default=False)
-parser.add_argument('--use_rerank', type=bool, default=False)
-parser.add_argument('--rerank_warmup', type=bool, default=False)
-parser.add_argument('--rerank_mode', type=str, default='lower_target_topk')
-parser.add_argument('--percentage_threshold', type=float, default=1.0)
-parser.add_argument('--consecutive_threshold', type=int, default=1)
 # Uncertainty Ratio
 parser.add_argument('--alpha', type=float, default=0.8)
 parser.add_argument('--beta', type=float, default=1.0)
 
 
 parser.add_argument('--pretrained_path', type=str, default='')
-parser.add_argument('--negative_definition_epoch_num', type=int, default=5)
-parser.add_argument('--init_topk', type=int, default=500)
 
 parser.add_argument('--method', type=str, default='qure')
 parser.add_argument("--pretrained", action="store_true")

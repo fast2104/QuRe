@@ -91,13 +91,15 @@ def test_dataset_factory(transforms, config, split='val'):
 
 def train_dataloader_factory(dataset, config, collate_fn=None):
     batch_size = config['batch_size']
+    if batch_size < 2:
+        raise ValueError("In-batch contrastive training requires batch_size >= 2.")
+    batch_size = min(batch_size, len(dataset))
+    if batch_size < 2:
+        raise ValueError("In-batch contrastive training requires at least two samples.")
     num_workers = config.get('num_workers', 16)
-    shuffle = config.get('shuffle', True)
-    # # TODO: remove this
-    # drop_last = batch_size == 32
 
     return DataLoader(dataset, batch_size, shuffle=True, num_workers=num_workers, pin_memory=True,
-                      collate_fn=collate_fn)
+                      collate_fn=collate_fn, drop_last=True)
 
 def test_dataloader_factory(datasets, config, collate_fn=None):
     batch_size = config['batch_size']

@@ -9,10 +9,25 @@ wandb.init(mode="disabled")
 import math
 from tqdm import tqdm
 import torch
-import torch.nn.functional as F
 import os
 
 from evaluate_qure.eval_utils import eval_fiq, eval_cirr
+
+
+def contrastive_loss(scores, target_ids):
+    target_ids = list(target_ids)
+    positive_mask = torch.tensor(
+        [[query_id == target_id for target_id in target_ids] for query_id in target_ids],
+        dtype=torch.bool,
+        device=scores.device,
+    )
+    query_to_target_loss = -torch.logsumexp(
+        scores.log_softmax(dim=1).masked_fill(~positive_mask, -torch.inf), dim=1
+    ).mean()
+    target_to_query_loss = -torch.logsumexp(
+        scores.T.log_softmax(dim=1).masked_fill(~positive_mask.T, -torch.inf), dim=1
+    ).mean()
+    return (query_to_target_loss + target_to_query_loss) / 2
 
 
 def main():
@@ -37,7 +52,23 @@ def main():
             raise FileNotFoundError(f"Training checkpoint not found: {checkpoint_path}")
         print(f" Loading training checkpoint from {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(checkpoint, strict=True)
+        incompatible_keys = model.load_state_dict(checkpoint, strict=False)
+        missing_keys = [
+            key
+            for key in incompatible_keys.missing_keys
+            if not key.startswith("ref_prompt_flow.")
+        ]
+        if missing_keys or incompatible_keys.unexpected_keys:
+            raise RuntimeError(
+                "Training checkpoint is incompatible with this model. "
+                f"Missing keys: {missing_keys}; "
+                f"unexpected keys: {incompatible_keys.unexpected_keys}"
+            )
+        if incompatible_keys.missing_keys:
+            print(
+                "Checkpoint predates the reference prompt-flow module; "
+                "its parameters will be initialized from scratch."
+            )
         log_file = os.path.join(os.path.dirname(checkpoint_path), "log.txt")
         if os.path.exists(log_file):
             with open(log_file, "r") as f:
@@ -50,31 +81,22 @@ def main():
     scaler =  torch.cuda.amp.GradScaler()
     for epoch in range(start_epoch, max_epochs):
         model.train()
-        if configs["use_rerank"]:
-            if (epoch % (max_epochs // configs["negative_definition_epoch_num"])) == 0:
-                if not configs['rerank_warmup'] or (epoch != 0 and configs['rerank_warmup']):
-                    train_dataloader.dataset.rerank_score(model, device, txt_processors, configs, epoch)
-
 
         epoch_running_loss = 0.0
         cosine_lr_schedule(optimizer, epoch, max_epochs, configs["init_lr"], configs["init_lr"]/100)
         train_dataloader_tqdm = tqdm(train_dataloader, desc="Epoch {}".format(epoch+1))
-        for batch_idx, (ref_images, tar_images, negative_images, sentences) in enumerate(train_dataloader_tqdm):
+        for batch_idx, (ref_images, tar_images, target_ids, sentences) in enumerate(train_dataloader_tqdm):
             optimizer.zero_grad()
 
             with torch.autocast(device_type='cuda', dtype=torch.float16):
-                ref_images, tar_images, negative_images = ref_images.to(device), tar_images.to(
-                    device), negative_images.to(device)
+                ref_images, tar_images = ref_images.to(device), tar_images.to(device)
 
                 sentences = [txt_processors["eval"](caption) for caption in sentences]
-                scores = model(ref_images, tar_images, sentences, negative_images, configs['use_temp'])
+                scores = model(ref_images, tar_images, sentences, configs['use_temp'])
 
-                log_softmax_scores = F.log_softmax(scores, dim=1)  
-
-                target_probs = torch.zeros_like(log_softmax_scores)
-                target_probs[:, 0] = 1.0  # p0 = 1 for each data point
-
-                loss = F.kl_div(log_softmax_scores, target_probs, reduction='batchmean')
+                loss = contrastive_loss(scores, target_ids)
+                if model.prompt_flow_kl is not None:
+                    loss = loss + model.prompt_flow_kl_weight * model.prompt_flow_kl
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
