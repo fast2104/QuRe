@@ -1,0 +1,214 @@
+wandb_version: 1
+
+config_path:
+  desc: null
+  value: experiments/contrastive_fashioniq_resume25_2026-10-12_0/config.json
+trainer:
+  desc: null
+  value: tirg
+epoch:
+  desc: null
+  value: 30
+evaluator:
+  desc: null
+  value: simple
+vocab_path:
+  desc: null
+  value: ''
+vocab_threshold:
+  desc: null
+  value: 0
+dataset:
+  desc: null
+  value: fashionIQ
+batch_size:
+  desc: null
+  value: 8
+num_workers:
+  desc: null
+  value: 16
+shuffle:
+  desc: null
+  value: true
+use_transform:
+  desc: null
+  value: true
+img_size:
+  desc: null
+  value: 224
+metric_loss:
+  desc: null
+  value: batch_based_classification_loss
+gamma_scale:
+  desc: null
+  value: 1
+feature_size:
+  desc: null
+  value: 512
+text_feature_size:
+  desc: null
+  value: 512
+word_embedding_size:
+  desc: null
+  value: 512
+image_encoder:
+  desc: null
+  value: resnet50_layer4
+stride:
+  desc: null
+  value: true
+text_encoder:
+  desc: null
+  value: blip
+compositor:
+  desc: null
+  value: transformer
+norm_scale:
+  desc: null
+  value: 4
+num_heads:
+  desc: null
+  value: 8
+global_styler:
+  desc: null
+  value: global2
+augmenter:
+  desc: null
+  value: normal_gaussian
+alpha_scale:
+  desc: null
+  value: 1
+beta_scale:
+  desc: null
+  value: 1
+optimizer:
+  desc: null
+  value: SGD
+lr:
+  desc: null
+  value: 0.002
+weight_decay:
+  desc: null
+  value: 0.05
+momentum:
+  desc: null
+  value: 0.9
+warmup_iters:
+  desc: null
+  value: 5
+decay_step:
+  desc: null
+  value: 35
+decay_step_second:
+  desc: null
+  value: 45
+gamma:
+  desc: null
+  value: 0.1
+lr_scheduler:
+  desc: null
+  value: MultiStepWithWarmup
+topk:
+  desc: null
+  value: 1,5,10,50
+wandb_project_name:
+  desc: null
+  value: QuRe
+wandb_account_name:
+  desc: null
+  value: '-'
+checkpoint_path:
+  desc: null
+  value: experiments/contrastive_fashioniq_2026-10-12_3/model.pth
+device_idx:
+  desc: null
+  value: '0'
+experiment_dir:
+  desc: null
+  value: experiments
+experiment_description:
+  desc: null
+  value: contrastive_fashioniq_resume25
+model:
+  desc: null
+  value: blip2
+random_seed:
+  desc: null
+  value: 1000
+init_lr:
+  desc: null
+  value: 5.0e-06
+use_temp:
+  desc: null
+  value: true
+alpha:
+  desc: null
+  value: 0.8
+beta:
+  desc: null
+  value: 1.0
+pretrained_path:
+  desc: null
+  value: ''
+method:
+  desc: null
+  value: qure
+pretrained:
+  desc: null
+  value: false
+backbone:
+  desc: null
+  value: pretrain_vitL
+blip_size:
+  desc: null
+  value: base
+min_lr:
+  desc: null
+  value: 5.0e-08
+mode:
+  desc: null
+  value: train
+prompt_flow_kl_weight:
+  desc: null
+  value: 0.01
+num_gpu:
+  desc: null
+  value: 1
+export_root:
+  desc: null
+  value: experiments/contrastive_fashioniq_resume25_2026-10-13_0
+_wandb:
+  desc: null
+  value:
+    python_version: 3.11.8
+    cli_version: 0.16.3
+    framework: huggingface
+    huggingface_version: 4.26.1
+    is_jupyter_run: false
+    is_kaggle_kernel: true
+    start_time: 1791905431.549317
+    t:
+      1:
+      - 1
+      - 5
+      - 11
+      - 33
+      - 41
+      - 49
+      - 53
+      - 55
+      - 63
+      - 71
+      - 83
+      - 98
+      3:
+      - 13
+      - 15
+      - 16
+      4: 3.11.8
+      5: 0.16.3
+      6: 4.26.1
+      8:
+      - 2
+      - 5
+      13: linux-x86_64

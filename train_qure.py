@@ -111,7 +111,7 @@ def main():
         if configs["experiment_description"] != 'debug':
             wandb.log({"loss" : cur_loss, "epoch" : epoch})
             wandb.log({'lr' : get_current_lr(optimizer), "epoch": epoch})
-            wandb.log({'k': topk, "epoch": epoch})
+            wandb.log({'k': configs["topk"], "epoch": epoch})
             if hasattr(model, 'temp'):
                 wandb.log({'temp': model.temp.item(), "epoch": epoch})
 
