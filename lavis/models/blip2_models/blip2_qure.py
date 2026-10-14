@@ -5,6 +5,7 @@
  For full license text, see the LICENSE file in the repo root or https://opensource.org/licenses/BSD-3-Clause
 """
 import os
+import math
 import numpy as np
 import logging
 from tqdm import tqdm
@@ -93,6 +94,52 @@ class Blip2QuRe(Blip2Base):
         self.temp = nn.Parameter(0.07 * torch.ones([]))
 
         self.max_txt_len = max_txt_len
+        self.gaussian_control_enabled = False
+        self.gaussian_control_gamma = 0.0
+
+    def configure_gaussian_control(self, config):
+        prompt_flow = config.get("prompt_flow", {})
+        if not isinstance(prompt_flow, dict):
+            raise TypeError("prompt_flow configuration must be an object")
+
+        enabled = prompt_flow.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise TypeError("prompt_flow.enabled must be a boolean")
+        if not enabled:
+            return
+
+        mode = prompt_flow.get("mode", "residual")
+        if mode not in {"residual", "gaussian_control"}:
+            raise ValueError(
+                "Gaussian control requires prompt_flow.mode to be "
+                "'residual' or 'gaussian_control'"
+            )
+
+        num_samples = prompt_flow.get("num_samples", 1)
+        if num_samples != 1:
+            raise ValueError("Gaussian control requires prompt_flow.num_samples=1")
+
+        gamma = prompt_flow.get("gamma", 0.1)
+        if not isinstance(gamma, (int, float)) or not math.isfinite(gamma) or gamma < 0:
+            raise ValueError("prompt_flow.gamma must be a finite non-negative number")
+
+        self.gaussian_control_enabled = True
+        self.gaussian_control_gamma = float(gamma)
+        if prompt_flow.get("freeze_base_query_tokens", False):
+            self.query_tokens.requires_grad_(False)
+
+    def _expand_query_tokens(self, batch_size, apply_gaussian_control=False):
+        query_tokens = self.query_tokens.expand(batch_size, -1, -1)
+        if (
+            apply_gaussian_control
+            and self.training
+            and self.gaussian_control_enabled
+            and self.gaussian_control_gamma > 0
+        ):
+            query_tokens = query_tokens + self.gaussian_control_gamma * torch.randn_like(
+                query_tokens
+            )
+        return query_tokens
 
     def forward(self, ref_images, tar_images, sentences, negative_images, use_temp):
         device = ref_images.device
@@ -112,7 +159,9 @@ class Blip2QuRe(Blip2Base):
         ref_image_embedding = ref_image_embedding.float()
         ref_image_embedding_atts = torch.ones(ref_image_embedding.size()[:-1], dtype=torch.long).to(device)
 
-        query_tokens = self.query_tokens.expand(ref_image_embedding.shape[0], -1, -1)
+        query_tokens = self._expand_query_tokens(
+            ref_image_embedding.shape[0], apply_gaussian_control=True
+        )
         query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(device)
         attention_mask = torch.cat([query_atts, text_tokens.attention_mask], dim=1)
 
@@ -197,7 +246,7 @@ class Blip2QuRe(Blip2Base):
 
             img_embedding = img_embedding.float()
             img_atts = torch.ones(img_embedding.size()[:-1], dtype=torch.long).to(device)
-            query_tokens = self.query_tokens.expand(img_embedding.shape[0], -1, -1)
+            query_tokens = self._expand_query_tokens(img_embedding.shape[0])
             query_output = self.Qformer.bert(
                 query_embeds=query_tokens,
                 encoder_hidden_states=img_embedding,
@@ -239,7 +288,9 @@ class Blip2QuRe(Blip2Base):
             ref_image_embedding = ref_image_embedding.float()
             ref_image_embedding_atts = torch.ones(ref_image_embedding.size()[:-1], dtype=torch.long).to(device)
 
-            query_tokens = self.query_tokens.expand(ref_image_embedding.shape[0], -1, -1)
+            query_tokens = self._expand_query_tokens(
+                ref_image_embedding.shape[0], apply_gaussian_control=True
+            )
             query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(device)
             attention_mask = torch.cat([query_atts, text_tokens.attention_mask], dim=1)
 
@@ -293,7 +344,9 @@ class Blip2QuRe(Blip2Base):
             ref_image_embedding = ref_image_embedding.float()
             ref_image_embedding_atts = torch.ones(ref_image_embedding.size()[:-1], dtype=torch.long).to(device)
 
-            query_tokens = self.query_tokens.expand(ref_image_embedding.shape[0], -1, -1)
+            query_tokens = self._expand_query_tokens(
+                ref_image_embedding.shape[0], apply_gaussian_control=True
+            )
             query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(device)
             attention_mask = torch.cat([query_atts, text_tokens.attention_mask], dim=1)
 
@@ -351,7 +404,9 @@ class Blip2QuRe(Blip2Base):
             ref_image_embedding = ref_image_embedding.float()
             ref_image_embedding_atts = torch.ones(ref_image_embedding.size()[:-1], dtype=torch.long).to(device)
 
-            query_tokens = self.query_tokens.expand(ref_image_embedding.shape[0], -1, -1)
+            query_tokens = self._expand_query_tokens(
+                ref_image_embedding.shape[0], apply_gaussian_control=True
+            )
             query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(device)
             attention_mask = torch.cat([query_atts, text_tokens.attention_mask], dim=1)
 
@@ -408,7 +463,9 @@ class Blip2QuRe(Blip2Base):
             ref_image_embedding = ref_image_embedding.float()
             ref_image_embedding_atts = torch.ones(ref_image_embedding.size()[:-1], dtype=torch.long).to(device)
 
-            query_tokens = self.query_tokens.expand(ref_image_embedding.shape[0], -1, -1)
+            query_tokens = self._expand_query_tokens(
+                ref_image_embedding.shape[0], apply_gaussian_control=True
+            )
             query_atts = torch.ones(query_tokens.size()[:-1], dtype=torch.long).to(device)
             attention_mask = torch.cat([query_atts, text_tokens.attention_mask], dim=1)
 
@@ -503,7 +560,6 @@ class Blip2QuRe(Blip2Base):
         model.load_checkpoint_from_config(cfg)
 
         return model
-
 
 
 

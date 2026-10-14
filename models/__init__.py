@@ -13,5 +13,7 @@ def create_qure_models(configs, device):
     backbone = configs["backbone"]
     model, _, txt_processors = load_model_and_preprocess(name=model_name, model_type=backbone, is_eval=False,
                                                          device=device)
+    if hasattr(model, "configure_gaussian_control"):
+        model.configure_gaussian_control(configs)
 
     return model, txt_processors
