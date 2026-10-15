@@ -28,6 +28,11 @@ from lavis.models.blip2_models.blip2 import (
     disabled_train,
 )
 from lavis.models.blip_models.blip_outputs import BlipOutput, BlipOutputFeatures
+from lavis.models.blip2_models.prompt_flow_module import (
+    PromptFlow,
+    compute_query_token_diversity,
+    compute_feature_diversity,
+)
 
 
 @registry.register_model("blip2_qure")
@@ -96,8 +101,12 @@ class Blip2QuRe(Blip2Base):
         self.max_txt_len = max_txt_len
         self.gaussian_control_enabled = False
         self.gaussian_control_gamma = 0.0
+        self.prompt_flow_enabled = False
+        self.prompt_flow = None
+        self.last_query_diversity = None
+        self.last_feature_diversity = None
 
-    def configure_gaussian_control(self, config):
+    def configure_prompt_flow(self, config):
         prompt_flow = config.get("prompt_flow", {})
         if not isinstance(prompt_flow, dict):
             raise TypeError("prompt_flow configuration must be an object")
@@ -111,24 +120,48 @@ class Blip2QuRe(Blip2Base):
         mode = prompt_flow.get("mode", "residual")
         if mode not in {"residual", "gaussian_control"}:
             raise ValueError(
-                "Gaussian control requires prompt_flow.mode to be "
-                "'residual' or 'gaussian_control'"
+                "prompt_flow.mode must be 'residual' or 'gaussian_control'"
             )
 
         num_samples = prompt_flow.get("num_samples", 1)
         if num_samples != 1:
-            raise ValueError("Gaussian control requires prompt_flow.num_samples=1")
+            raise ValueError("prompt_flow requires num_samples=1 for round 1")
 
         gamma = prompt_flow.get("gamma", 0.1)
         if not isinstance(gamma, (int, float)) or not math.isfinite(gamma) or gamma < 0:
             raise ValueError("prompt_flow.gamma must be a finite non-negative number")
 
-        self.gaussian_control_enabled = True
-        self.gaussian_control_gamma = float(gamma)
         if prompt_flow.get("freeze_base_query_tokens", False):
             self.query_tokens.requires_grad_(False)
 
+        if mode == "gaussian_control":
+            self.gaussian_control_enabled = True
+            self.gaussian_control_gamma = float(gamma)
+        elif mode == "residual":
+            num_flows = prompt_flow.get("num_flows", 4)
+            eval_mode = prompt_flow.get("eval_mode", "mean")
+            embed_dim = self.Qformer.config.hidden_size
+            num_query_tokens = self.query_tokens.shape[1]
+
+            self.prompt_flow = PromptFlow(
+                embed_dim=embed_dim,
+                num_query_tokens=num_query_tokens,
+                num_flows=num_flows,
+                gamma=float(gamma),
+                eval_mode=eval_mode,
+            ).to(self.query_tokens.device)
+            self.prompt_flow_enabled = True
+
+    def configure_gaussian_control(self, config):
+        return self.configure_prompt_flow(config)
+
     def _expand_query_tokens(self, batch_size, apply_gaussian_control=False):
+        if self.prompt_flow_enabled and self.prompt_flow is not None:
+            query_tokens, _ = self.prompt_flow(self.query_tokens, batch_size=batch_size)
+            if self.training:
+                self.last_query_diversity = compute_query_token_diversity(query_tokens)
+            return query_tokens
+
         query_tokens = self.query_tokens.expand(batch_size, -1, -1)
         if (
             apply_gaussian_control
@@ -176,6 +209,8 @@ class Blip2QuRe(Blip2Base):
 
         query_embeds = query_output.last_hidden_state[:, : query_tokens.size(1), :]
         projected_query = self.text_proj(query_embeds).mean(dim=1)
+        if self.training and self.prompt_flow_enabled:
+            self.last_feature_diversity = compute_feature_diversity(projected_query)
         # projected_query = projected_query.mean(dim=1)
 
         # Target & Negative Embeddings
@@ -521,7 +556,7 @@ class Blip2QuRe(Blip2Base):
 
             target_image_embedding = target_image_embedding.float()
             target_image_atts = torch.ones(target_image_embedding.size()[:-1], dtype=torch.long).to(device)
-            query_tokens = self.query_tokens.expand(target_image_embedding.shape[0], -1, -1)
+            query_tokens = self._expand_query_tokens(target_image_embedding.shape[0])
             query_output = self.Qformer.bert(
                 query_embeds=query_tokens,
                 encoder_hidden_states=target_image_embedding,

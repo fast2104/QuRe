@@ -49,7 +49,7 @@ def main():
     optimizer_name = configs.get("optimizer", "SGD")
     if optimizer_name != "SGD":
         raise ValueError(
-            f"B1 requires optimizer=SGD, but got {optimizer_name!r}"
+            f"Experiment requires optimizer=SGD, but got {optimizer_name!r}"
         )
     optimizer = torch.optim.SGD(
         filter(lambda p: p.requires_grad, model.parameters()),
@@ -107,10 +107,18 @@ def main():
 
         train_results = {'loss' : cur_loss, 'lr' : get_current_lr(optimizer)}
         print(f"[EPOCH {epoch+1}/{max_epochs}] Loss : {train_results['loss']} lr : {train_results['lr']}")
+        if hasattr(model, 'last_query_diversity') and model.last_query_diversity is not None:
+            print(f"[EPOCH {epoch+1}/{max_epochs}] Query Diversity D_Q: {model.last_query_diversity:.6f}")
+        if hasattr(model, 'last_feature_diversity') and model.last_feature_diversity is not None:
+            print(f"[EPOCH {epoch+1}/{max_epochs}] Feature Diversity D_Z: {model.last_feature_diversity:.6f}")
         if configs["experiment_description"] != 'debug':
             wandb.log({"loss" : cur_loss, "epoch" : epoch})
             wandb.log({'lr' : get_current_lr(optimizer), "epoch": epoch})
             wandb.log({'k': topk, "epoch": epoch})
+            if hasattr(model, 'last_query_diversity') and model.last_query_diversity is not None:
+                wandb.log({'diversity_q': model.last_query_diversity, "epoch": epoch})
+            if hasattr(model, 'last_feature_diversity') and model.last_feature_diversity is not None:
+                wandb.log({'diversity_z': model.last_feature_diversity, "epoch": epoch})
             if hasattr(model, 'temp'):
                 wandb.log({'temp': model.temp.item(), "epoch": epoch})
 
