@@ -196,10 +196,14 @@ class FashionIQDataset(Dataset):
         sample_dataloader = self.get_sample_loader()
         query_dataloader = self.get_query_loader()
 
-        predicted_features, _ = model.extract_query_features_fiq(query_dataloader, configs['use_temp'], txt_processors, device)
+        predicted_features, _ = model.extract_query_features_fiq(
+            query_dataloader, configs['use_temp'], txt_processors, device
+        )
         index_features, index_names = model.extract_target_features(sample_dataloader, configs['use_temp'], device)
 
+        print("Computing hard-negative rerank scores...", flush=True)
         scores = model.score(predicted_features, index_features)
+        print("Hard-negative rerank scores computed.", flush=True)
 
         for index in tqdm(range(len(self.triplets)), desc=f"Reranking with score and image similarity"):
             image_captions = self.triplets[index]['captions']
@@ -229,6 +233,8 @@ class FashionIQDataset(Dataset):
             # Sort indices by difference values (ascending order)
             diff_sorted_indices = np.argsort(differences)
 
+            start_of_hard_negatives = start_index
+            end_of_hard_negatives = len(cur_query_score_sorted_indices) - 1
             idx = 0
             while idx < len(diff_sorted_indices) - 1:
                 idx1 = diff_sorted_indices[idx]
@@ -246,10 +252,15 @@ class FashionIQDataset(Dataset):
                     # diff_sorted_indices = [idx_ for idx_ in diff_sorted_indices if idx_ > idx2]
 
             # Negative set : start_of_false_negatives + 1 ~ end_of_false_negatives
-            top_k_score_indices = [i for i in cur_query_score_sorted_indices.tolist()][start_of_hard_negatives + 1:end_of_hard_negatives + 1]
+            top_k_score_indices = [
+                i for i in cur_query_score_sorted_indices.tolist()
+            ][start_of_hard_negatives + 1:end_of_hard_negatives + 1]
 
             if len(top_k_score_indices) == 0:
-                assert 0, "Empty negative set is defined"
+                raise RuntimeError(
+                    f"Hard-negative pool is empty for triplet {index} "
+                    f"(dress_type={cur_dress_type}, target={target_name})"
+                )
 
 
             if len(top_k_score_indices) != 0:
@@ -277,13 +288,27 @@ class FashionIQDataset(Dataset):
         # image_corpus = [image for image in self.image_names]
         sample_dataset = FashionIQSampleDataset(base_path, image_corpus, self.preprocess)
         collate_fn = BLIPPaddingCollateFunctionTest4FIQ()
-        sample_dataloader = DataLoader(sample_dataset, batch_size=64, shuffle=False, num_workers=16, pin_memory=True, collate_fn=collate_fn)
+        sample_dataloader = DataLoader(
+            sample_dataset,
+            batch_size=64,
+            shuffle=False,
+            num_workers=self.config.get('num_workers', 4),
+            pin_memory=True,
+            collate_fn=collate_fn,
+        )
 
         return sample_dataloader
     def get_query_loader(self):
         query_dataset = FashionIQQueryDataset(base_path, self.triplets, self.preprocess)
         collate_fn = BLIPPaddingCollateFunctionTest4FIQ()
-        query_dataloader = DataLoader(query_dataset, batch_size=64, shuffle=False, num_workers=16, pin_memory=True, collate_fn=collate_fn)
+        query_dataloader = DataLoader(
+            query_dataset,
+            batch_size=64,
+            shuffle=False,
+            num_workers=self.config.get('num_workers', 4),
+            pin_memory=True,
+            collate_fn=collate_fn,
+        )
 
         return query_dataloader
 

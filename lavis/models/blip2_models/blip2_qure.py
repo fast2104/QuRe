@@ -235,7 +235,7 @@ class Blip2QuRe(Blip2Base):
     @torch.no_grad()
     def extract_target_features(self, dataloader, use_temp, device):
         feature_dim = 256
-        index_features = torch.empty((0, 32, feature_dim)).to(device, non_blocking=True)
+        index_features = []
         index_names = []
 
         for images, names in tqdm(dataloader, desc="Extract Sample Features"):
@@ -255,9 +255,9 @@ class Blip2QuRe(Blip2Base):
             )
             batch_features = self.vision_proj(query_output.last_hidden_state)
             batch_features = F.normalize(batch_features, dim=-1)
-            index_features = torch.vstack((index_features, batch_features))
+            index_features.append(batch_features.cpu())
             index_names.extend(names)
-        return index_features.cpu(), index_names
+        return torch.cat(index_features), index_names
 
 
     @torch.no_grad()
@@ -266,7 +266,7 @@ class Blip2QuRe(Blip2Base):
         feature_dim = 256
 
         # Initialize predicted features, target_names, group_members and reference_names
-        predicted_features = torch.empty((0, feature_dim)).to(device, non_blocking=True)
+        predicted_features = []
         target_names = []
 
         for ref_images, sentences, target_name in tqdm(dataloader, desc="Extract Query Features"):  # Load data
@@ -308,10 +308,10 @@ class Blip2QuRe(Blip2Base):
             # query_features = query_features.mean(dim=1)
             query_features = F.normalize(query_features, dim=-1)
 
-            predicted_features = torch.vstack((predicted_features, query_features))
+            predicted_features.append(query_features.cpu())
             target_names.extend(target_name)
 
-        return predicted_features.cpu(), target_names
+        return torch.cat(predicted_features), target_names
 
 
     @torch.no_grad()
@@ -493,10 +493,13 @@ class Blip2QuRe(Blip2Base):
 
     @torch.no_grad()
     def score(self, query_features, target_features):
-        scoress = torch.einsum('ik,jlk->ijl', query_features, target_features)
-        scores, _ = scoress.max(-1)
-        # scores = scores / self.temp.cpu()
-        return scores
+        score_chunks = []
+        for query_chunk in query_features.split(32):
+            chunk_scores = torch.einsum(
+                'ik,jlk->ijl', query_chunk, target_features
+            ).amax(dim=-1)
+            score_chunks.append(chunk_scores)
+        return torch.cat(score_chunks, dim=0)
 
     @torch.no_grad()
     def extract_target_image_features_fiq(self, dataloader, device):
@@ -560,8 +563,6 @@ class Blip2QuRe(Blip2Base):
         model.load_checkpoint_from_config(cfg)
 
         return model
-
-
 
 
 

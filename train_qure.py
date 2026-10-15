@@ -7,6 +7,7 @@ import wandb
 wandb.init(mode="disabled")
 
 import math
+import re
 from tqdm import tqdm
 import torch
 import torch.nn.functional as F
@@ -22,6 +23,27 @@ def main():
 
     model, txt_processors = create_qure_models(configs, device)
 
+    start_epoch = 0
+    checkpoint_path = configs.get("checkpoint_path", "")
+    if checkpoint_path:
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint, strict=True)
+        checkpoint_log = os.path.join(os.path.dirname(checkpoint_path), "log.txt")
+        if not os.path.isfile(checkpoint_log):
+            raise FileNotFoundError(f"Checkpoint log not found: {checkpoint_log}")
+        with open(checkpoint_log, encoding="utf-8") as file:
+            completed_epochs = [
+                int(match.group(1))
+                for line in file
+                if (match := re.search(r"^Epoch\s*:\s*(\d+)\s*$", line.strip()))
+            ]
+        if not completed_epochs:
+            raise ValueError(f"No completed epoch found in checkpoint log: {checkpoint_log}")
+        start_epoch = max(completed_epochs)
+        print(f"Resuming model weights from {checkpoint_path} at epoch {start_epoch}")
+
     image_transform = image_transform_factory(config=configs)
     train_dataloader, test_dataloaders = create_dataloaders(image_transform, None, configs)
 
@@ -29,20 +51,6 @@ def main():
                                   weight_decay=configs['weight_decay'])
 
     max_epochs = configs['epoch']
-
-    # Auto-resume from latest experiment checkpoint if available
-    latest_ckpt = "/home/iec/sontung_veryIMPORTANT/QuRe/experiments/debug_2026-10-08_0/model.pth"
-    start_epoch = 0
-    if os.path.exists(latest_ckpt):
-        print(f" Found existing checkpoint at {latest_ckpt}! Loading model weights...")
-        model.load_state_dict(torch.load(latest_ckpt, map_location=device))
-        log_file = os.path.join(os.path.dirname(latest_ckpt), "log.txt")
-        if os.path.exists(log_file):
-            with open(log_file, "r") as f:
-                lines = [line.strip() for line in f if "Epoch" in line]
-                if lines:
-                    start_epoch = int(lines[-1].split(":")[-1].strip())
-                    print(f" Resuming training from Epoch {start_epoch + 1}/{max_epochs}...")
 
     model.train()
     scaler =  torch.cuda.amp.GradScaler()
@@ -104,8 +112,8 @@ def main():
             append_log(os.path.join(saving_path, "log.txt"), f"Epoch : {epoch + 1}\n")
             print(f"Saved checkpoint to {os.path.join(saving_path, 'model.pth')}")
 
-        eval_frequency = 1
-        if (epoch + 1) % eval_frequency == 0:
+        eval_frequency = configs.get('eval_frequency', 1)
+        if eval_frequency > 0 and (epoch + 1) % eval_frequency == 0:
             if configs['dataset'] == 'fashionIQ':
                 eval_fiq(model, txt_processors, test_dataloaders, epoch, configs)
 

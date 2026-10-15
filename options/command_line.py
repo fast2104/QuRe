@@ -3,6 +3,16 @@ import sys
 
 parser = argparse.ArgumentParser(description='Options for CoSMo.pytorch')
 
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    normalized = value.lower()
+    if normalized in ('true', '1', 'yes', 'y'):
+        return True
+    if normalized in ('false', '0', 'no', 'n'):
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
+
 #########################
 # Load Template
 #########################
@@ -13,6 +23,7 @@ parser.add_argument('--config_path', type=str, default='', help='config json pat
 #########################
 parser.add_argument('--trainer', type=str, default="tirg", help='Select Trainer')
 parser.add_argument('--epoch', type=int, default=80, help='epoch (default: 80)')
+parser.add_argument('--eval_frequency', type=int, default=1, help='evaluate every N epochs; 0 disables evaluation')
 parser.add_argument('--evaluator', type=str, default="simple", help='Select Evaluator')
 
 #########################
@@ -104,8 +115,8 @@ parser.add_argument('--model', type=str, default='blip2')
 parser.add_argument('--random_seed', type=int, default=1000)
 parser.add_argument('--init_lr', type=float, default=1e-6, help='learning rate')
 parser.add_argument('--use_temp', type=bool, default=False)
-parser.add_argument('--use_rerank', type=bool, default=False)
-parser.add_argument('--rerank_warmup', type=bool, default=False)
+parser.add_argument('--use_rerank', type=parse_bool, default=False)
+parser.add_argument('--rerank_warmup', type=parse_bool, default=False)
 parser.add_argument('--rerank_mode', type=str, default='lower_target_topk')
 parser.add_argument('--percentage_threshold', type=float, default=1.0)
 parser.add_argument('--consecutive_threshold', type=int, default=1)
