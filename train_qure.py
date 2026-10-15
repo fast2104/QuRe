@@ -6,7 +6,6 @@ from models import create_qure_models
 import wandb
 wandb.init(mode="disabled")
 
-import math
 import re
 from tqdm import tqdm
 import torch
@@ -47,8 +46,17 @@ def main():
     image_transform = image_transform_factory(config=configs)
     train_dataloader, test_dataloaders = create_dataloaders(image_transform, None, configs)
 
-    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=configs['init_lr'],
-                                  weight_decay=configs['weight_decay'])
+    optimizer_name = configs.get("optimizer", "SGD")
+    if optimizer_name != "SGD":
+        raise ValueError(
+            f"B1 requires optimizer=SGD, but got {optimizer_name!r}"
+        )
+    optimizer = torch.optim.SGD(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=configs["init_lr"],
+        momentum=configs["momentum"],
+        weight_decay=configs["weight_decay"],
+    )
 
     max_epochs = configs['epoch']
 
@@ -63,7 +71,14 @@ def main():
 
 
         epoch_running_loss = 0.0
-        cosine_lr_schedule(optimizer, epoch, max_epochs, configs["init_lr"], configs["init_lr"]/100)
+        multistep_with_warmup(
+            optimizer,
+            epoch,
+            configs["init_lr"],
+            configs["warmup_iters"],
+            (configs["decay_step"], configs["decay_step_second"]),
+            configs["gamma"],
+        )
         train_dataloader_tqdm = tqdm(train_dataloader, desc="Epoch {}".format(epoch+1))
         for batch_idx, (ref_images, tar_images, negative_images, sentences) in enumerate(train_dataloader_tqdm):
             optimizer.zero_grad()
@@ -120,9 +135,12 @@ def main():
             elif configs['dataset'] == 'cirr':
                 eval_cirr(model, txt_processors, test_dataloaders, epoch, configs)
 
-def cosine_lr_schedule(optimizer, epoch, max_epoch, init_lr, min_lr):
-    """Decay the learning rate"""
-    lr = (init_lr - min_lr) * 0.5 * (1. + math.cos(math.pi * epoch / max_epoch)) + min_lr
+def multistep_with_warmup(optimizer, epoch, init_lr, warmup_iters, milestones, gamma):
+    """Apply epoch-based linear warmup followed by MultiStep decay."""
+    if warmup_iters > 0 and epoch < warmup_iters:
+        lr = init_lr * (epoch + 1) / warmup_iters
+    else:
+        lr = init_lr * gamma ** sum(epoch >= milestone for milestone in milestones)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
