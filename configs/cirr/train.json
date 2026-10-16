@@ -17,7 +17,7 @@
     "wandb_project_name": "QuRe",
     "wandb_account_name": "-",
     "device_idx": "0",
-    "experiment_description": "debug",
+    "experiment_description": "b3_prompt_flow_gamma0.5",
     "mode": "train",
     "negative": "random_rerank",
     "use_temp": true,
@@ -29,7 +29,7 @@
         "enabled": true,
         "mode": "residual",
         "num_samples": 1,
-        "gamma": 0.1,
+        "gamma": 0.5,
         "freeze_base_query_tokens": true
     }
 }
