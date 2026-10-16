@@ -102,6 +102,12 @@ class Blip2QuRe(Blip2Base):
             num_prompts=num_query_token,
             num_flows=num_prompt_flows,
         )
+        self.tar_prompt_flow = PlanarPromptFlow(
+            vision_dim=self.visual_encoder.num_features,
+            hidden_dim=hidden_size,
+            num_prompts=num_query_token,
+            num_flows=num_prompt_flows,
+        )
         self.prompt_flow_kl_weight = prompt_flow_kl_weight
         self.prompt_flow_kl = None
         self.ref_query_tokens.requires_grad_(False)
@@ -161,9 +167,13 @@ class Blip2QuRe(Blip2Base):
                 image_embedding.shape[0], -1, -1
             )
         else:
-            expanded_query_tokens, self.prompt_flow_kl = prompt_flow(
+            expanded_query_tokens, kl = prompt_flow(
                 image_embedding.mean(dim=1)
             )
+            if self.prompt_flow_kl is None:
+                self.prompt_flow_kl = kl
+            else:
+                self.prompt_flow_kl = self.prompt_flow_kl + kl
         query_output = qformer.bert(
             query_embeds=expanded_query_tokens,
             encoder_hidden_states=image_embedding,
@@ -210,13 +220,16 @@ class Blip2QuRe(Blip2Base):
 
     def _encode_target_features(self, images):
         target_query_embeds = self._encode_image_queries(
-            images, self.Qformer, self.query_tokens
+            images, self.Qformer, self.query_tokens,
+            prompt_flow=self.tar_prompt_flow,
         )
         target_features = self.vision_proj(target_query_embeds)
         return F.normalize(target_features, p=2, dim=-1)
 
     def forward(self, ref_images, tar_images, sentences, use_temp):
         device = ref_images.device
+        # Reset KL accumulator trước mỗi forward pass
+        self.prompt_flow_kl = None
         projected_query = self._encode_query_features(
             ref_images, sentences, device, normalize=True
         )
