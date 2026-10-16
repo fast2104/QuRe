@@ -57,6 +57,7 @@ def main():
             key
             for key in incompatible_keys.missing_keys
             if not key.startswith("ref_prompt_flow.")
+            and not key.startswith("tar_prompt_flow.")
         ]
         if missing_keys or incompatible_keys.unexpected_keys:
             raise RuntimeError(
@@ -66,7 +67,7 @@ def main():
             )
         if incompatible_keys.missing_keys:
             print(
-                "Checkpoint predates the reference prompt-flow module; "
+                "Checkpoint predates the prompt-flow modules; "
                 "its parameters will be initialized from scratch."
             )
         log_file = os.path.join(os.path.dirname(checkpoint_path), "log.txt")
