@@ -71,6 +71,10 @@ def main():
 
 
         epoch_running_loss = 0.0
+        epoch_running_dq = 0.0
+        epoch_running_dz = 0.0
+        dq_count = 0
+        dz_count = 0
         multistep_with_warmup(
             optimizer,
             epoch,
@@ -103,25 +107,34 @@ def main():
 
             epoch_running_loss += loss.item()
             cur_loss = epoch_running_loss / (batch_idx + 1)
-            train_dataloader_tqdm.set_postfix({'loss': cur_loss})
+            postfix_dict = {'loss': f"{cur_loss:.4f}"}
+            if hasattr(model, 'last_query_diversity') and model.last_query_diversity is not None:
+                epoch_running_dq += model.last_query_diversity
+                dq_count += 1
+                postfix_dict['D_Q'] = f"{model.last_query_diversity:.4f}"
+            if hasattr(model, 'last_feature_diversity') and model.last_feature_diversity is not None:
+                epoch_running_dz += model.last_feature_diversity
+                dz_count += 1
+                postfix_dict['D_Z'] = f"{model.last_feature_diversity:.4f}"
+            train_dataloader_tqdm.set_postfix(postfix_dict)
 
+        avg_dq = (epoch_running_dq / dq_count) if dq_count > 0 else None
+        avg_dz = (epoch_running_dz / dz_count) if dz_count > 0 else None
         train_results = {'loss' : cur_loss, 'lr' : get_current_lr(optimizer)}
-        print(f"[EPOCH {epoch+1}/{max_epochs}] Loss : {train_results['loss']} lr : {train_results['lr']}")
-        if hasattr(model, 'last_query_diversity') and model.last_query_diversity is not None:
-            print(f"[EPOCH {epoch+1}/{max_epochs}] Query Diversity D_Q: {model.last_query_diversity:.6f}")
-        if hasattr(model, 'last_feature_diversity') and model.last_feature_diversity is not None:
-            print(f"[EPOCH {epoch+1}/{max_epochs}] Feature Diversity D_Z: {model.last_feature_diversity:.6f}")
+        print(f"[EPOCH {epoch+1}/{max_epochs}] Loss : {train_results['loss']:.4f} lr : {train_results['lr']}")
+        if avg_dq is not None:
+            print(f"[EPOCH {epoch+1}/{max_epochs}] Query Diversity D_Q (avg): {avg_dq:.6f}")
+        if avg_dz is not None:
+            print(f"[EPOCH {epoch+1}/{max_epochs}] Feature Diversity D_Z (avg): {avg_dz:.6f}")
         if configs["experiment_description"] != 'debug':
             wandb.log({"loss" : cur_loss, "epoch" : epoch})
             wandb.log({'lr' : get_current_lr(optimizer), "epoch": epoch})
-            wandb.log({'k': topk, "epoch": epoch})
-            if hasattr(model, 'last_query_diversity') and model.last_query_diversity is not None:
-                wandb.log({'diversity_q': model.last_query_diversity, "epoch": epoch})
-            if hasattr(model, 'last_feature_diversity') and model.last_feature_diversity is not None:
-                wandb.log({'diversity_z': model.last_feature_diversity, "epoch": epoch})
+            if avg_dq is not None:
+                wandb.log({'diversity_q': avg_dq, "epoch": epoch})
+            if avg_dz is not None:
+                wandb.log({'diversity_z': avg_dz, "epoch": epoch})
             if hasattr(model, 'temp'):
                 wandb.log({'temp': model.temp.item(), "epoch": epoch})
-
             if hasattr(model, 'logit_scale'):
                 wandb.log({'temp': model.logit_scale.item(), "epoch": epoch})
 

@@ -377,9 +377,24 @@ class PlanarPFL_state(PFL):
 
 def compute_query_token_diversity(query_tokens):
     """
-    Computes query-token diversity D_Q across samples in a batch.
-    D_Q = 1 - [2 / (B(B-1))] sum_{i<j} cos(Q^(i), Q^(j))
+    Computes query-token diversity D_Q.
+    - If query_tokens has shape (B, S, num_tokens, embed_dim) with S > 1 (Mục 6 & 7):
+        D_Q = 1 - [2 / (S(S-1))] sum_{i<j} cos(Q^(i), Q^(j)), averaged across batch B.
+    - If query_tokens has shape (B, num_tokens, embed_dim) (S = 1):
+        D_Q = 1 - [2 / (B(B-1))] sum_{i<j} cos(Q^(i), Q^(j)) across batch B.
     """
+    if query_tokens.dim() == 4:
+        B, S, N, D = query_tokens.shape
+        if S <= 1:
+            return 0.0
+        flat_tokens = query_tokens.reshape(B, S, -1)
+        norm = flat_tokens.norm(dim=-1, keepdim=True) + 1e-8
+        normalized = flat_tokens / norm
+        sim_matrix = torch.bmm(normalized, normalized.transpose(1, 2))  # (B, S, S)
+        indices = torch.triu_indices(S, S, offset=1)
+        mean_cos = sim_matrix[:, indices[0], indices[1]].mean().item()
+        return float(max(0.0, min(2.0, 1.0 - mean_cos)))
+
     B = query_tokens.shape[0]
     if B <= 1:
         return 0.0
@@ -389,14 +404,28 @@ def compute_query_token_diversity(query_tokens):
     sim_matrix = torch.mm(normalized, normalized.t())
     indices = torch.triu_indices(B, B, offset=1)
     mean_cos = sim_matrix[indices[0], indices[1]].mean().item()
-    return float(max(0.0, 1.0 - mean_cos))
+    return float(max(0.0, min(2.0, 1.0 - mean_cos)))
 
 
 def compute_feature_diversity(features):
     """
-    Computes feature diversity D_Z across samples in a batch after Q-Former.
-    D_Z = 1 - [2 / (B(B-1))] sum_{i<j} cos(z_q^(i), z_q^(j))
+    Computes feature diversity D_Z across samples after Q-Former.
+    - If features has shape (B, S, embed_dim) with S > 1:
+        D_Z = 1 - [2 / (S(S-1))] sum_{i<j} cos(z_q^(i), z_q^(j)), averaged across batch B.
+    - If features has shape (B, embed_dim) (S = 1):
+        D_Z = 1 - [2 / (B(B-1))] sum_{i<j} cos(z_q^(i), z_q^(j)) across batch B.
     """
+    if features.dim() == 3:
+        B, S, D = features.shape
+        if S <= 1:
+            return 0.0
+        norm = features.norm(dim=-1, keepdim=True) + 1e-8
+        normalized = features / norm
+        sim_matrix = torch.bmm(normalized, normalized.transpose(1, 2))  # (B, S, S)
+        indices = torch.triu_indices(S, S, offset=1)
+        mean_cos = sim_matrix[:, indices[0], indices[1]].mean().item()
+        return float(max(0.0, min(2.0, 1.0 - mean_cos)))
+
     B = features.shape[0]
     if B <= 1:
         return 0.0
@@ -406,4 +435,4 @@ def compute_feature_diversity(features):
     sim_matrix = torch.mm(normalized, normalized.t())
     indices = torch.triu_indices(B, B, offset=1)
     mean_cos = sim_matrix[indices[0], indices[1]].mean().item()
-    return float(max(0.0, 1.0 - mean_cos))
+    return float(max(0.0, min(2.0, 1.0 - mean_cos)))

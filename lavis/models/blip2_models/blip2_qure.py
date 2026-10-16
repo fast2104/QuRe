@@ -124,8 +124,8 @@ class Blip2QuRe(Blip2Base):
             )
 
         num_samples = prompt_flow.get("num_samples", 1)
-        if num_samples != 1:
-            raise ValueError("prompt_flow requires num_samples=1 for round 1")
+        if not isinstance(num_samples, int) or num_samples < 1:
+            raise ValueError("prompt_flow requires num_samples >= 1")
 
         gamma = prompt_flow.get("gamma", 0.1)
         if not isinstance(gamma, (int, float)) or not math.isfinite(gamma) or gamma < 0:
@@ -151,15 +151,30 @@ class Blip2QuRe(Blip2Base):
                 eval_mode=eval_mode,
             ).to(self.query_tokens.device)
             self.prompt_flow_enabled = True
+            self.prompt_flow_num_samples = num_samples
 
     def configure_gaussian_control(self, config):
         return self.configure_prompt_flow(config)
 
     def _expand_query_tokens(self, batch_size, apply_gaussian_control=False):
         if self.prompt_flow_enabled and self.prompt_flow is not None:
-            query_tokens, _ = self.prompt_flow(self.query_tokens, batch_size=batch_size)
-            if self.training:
-                self.last_query_diversity = compute_query_token_diversity(query_tokens)
+            num_samples = getattr(self, "prompt_flow_num_samples", 1)
+            if num_samples > 1:
+                # Sample batch_size * num_samples query tokens
+                raw_query_tokens, _ = self.prompt_flow(
+                    self.query_tokens, batch_size=batch_size * num_samples
+                )
+                query_tokens_grouped = raw_query_tokens.view(
+                    batch_size, num_samples, self.query_tokens.shape[1], -1
+                )
+                if self.training:
+                    self.last_query_diversity = compute_query_token_diversity(query_tokens_grouped)
+                # Mean aggregation over samples: (batch_size, num_query_tokens, embed_dim)
+                query_tokens = query_tokens_grouped.mean(dim=1)
+            else:
+                query_tokens, _ = self.prompt_flow(self.query_tokens, batch_size=batch_size)
+                if self.training:
+                    self.last_query_diversity = compute_query_token_diversity(query_tokens)
             return query_tokens
 
         query_tokens = self.query_tokens.expand(batch_size, -1, -1)
