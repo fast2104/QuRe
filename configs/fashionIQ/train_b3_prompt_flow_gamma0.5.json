@@ -9,6 +9,7 @@
     "blip_size": "base",
     "text_encoder": "blip",
     "weight_decay": 5e-2,
+    "max_grad_norm": 1.0,
     "random_seed": 1000,
     "experiment_dir": "experiments",
     "init_lr": 5e-6,

@@ -101,7 +101,21 @@ def main():
 
                 loss = F.kl_div(log_softmax_scores, target_probs, reduction='batchmean')
 
+            if not torch.isfinite(loss):
+                print(
+                    f"Skipping non-finite loss at epoch {epoch + 1}, "
+                    f"batch {batch_idx + 1}: {loss.item()}",
+                    flush=True,
+                )
+                optimizer.zero_grad(set_to_none=True)
+                continue
+
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                configs.get("max_grad_norm", 1.0),
+            )
             scaler.step(optimizer)
             scaler.update()
 

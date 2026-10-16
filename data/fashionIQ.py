@@ -195,6 +195,7 @@ class FashionIQDataset(Dataset):
 
         sample_dataloader = self.get_sample_loader()
         query_dataloader = self.get_query_loader()
+        fallback_count = 0
 
         predicted_features, _ = model.extract_query_features_fiq(
             query_dataloader, configs['use_temp'], txt_processors, device
@@ -256,20 +257,36 @@ class FashionIQDataset(Dataset):
                 i for i in cur_query_score_sorted_indices.tolist()
             ][start_of_hard_negatives + 1:end_of_hard_negatives + 1]
 
-            if len(top_k_score_indices) == 0:
-                raise RuntimeError(
-                    f"Hard-negative pool is empty for triplet {index} "
-                    f"(dress_type={cur_dress_type}, target={target_name})"
-                )
+            cur_dress_type_target_images = [
+                triplet['target'] for triplet in self.domain_triplets[cur_dress_type]
+            ]
+            topk_image_names = list(dict.fromkeys(
+                cur_dress_type_target_images[i]
+                for i in top_k_score_indices
+                if cur_dress_type_target_images[i] != target_name
+            ))
 
-
-            if len(top_k_score_indices) != 0:
-                cur_dress_type_target_images = [triplet['target'] for triplet in self.domain_triplets[cur_dress_type]]
-                # cur_dress_type_target_images = [image for image in self.domain_image_names[cur_dress_type]]
-                topk_image_names = list(set([cur_dress_type_target_images[i] for i in top_k_score_indices if cur_dress_type_target_images[i] != target_name]))
-            else:
-                assert 0, "Empty negative set is defined"
+            if not topk_image_names:
+                fallback_count += 1
+                fallback_candidates = [
+                    cur_dress_type_target_images[i]
+                    for i in cur_query_score_sorted_indices.tolist()
+                    if cur_dress_type_target_images[i] != target_name
+                ]
+                topk_image_names = list(dict.fromkeys(fallback_candidates[:1]))
+                if not topk_image_names:
+                    raise RuntimeError(
+                        f"Cannot construct a valid hard-negative pool for triplet {index} "
+                        f"(dress_type={cur_dress_type}, target={target_name}, "
+                        f"reference={reference_name})"
+                    )
             self.hard_images.append(topk_image_names)
+
+        print(
+            f"Hard-negative rerank fallback used for {fallback_count} "
+            f"of {len(self.triplets)} triplets.",
+            flush=True,
+        )
 
         if configs["experiment_description"] != 'debug':
             sizes = [len(sublist) for sublist in self.hard_images]
