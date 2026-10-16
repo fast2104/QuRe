@@ -136,6 +136,11 @@ class PromptFlow(nn.Module):
                 nn.init.normal_(m.weight, mean=0.0, std=0.02)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
+        # Near-zero scale initialization for final decoder layer to prevent overpowering pre-trained query tokens
+        if hasattr(self, "decoder") and hasattr(self.decoder, "weight_mean"):
+            nn.init.normal_(self.decoder.weight_mean.module[-1].weight, mean=0.0, std=1e-4)
+            if self.decoder.weight_mean.module[-1].bias is not None:
+                nn.init.zeros_(self.decoder.weight_mean.module[-1].bias)
 
     def reset_eval_cache(self):
         self._cached_eval_delta = None
