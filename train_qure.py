@@ -7,6 +7,7 @@ import wandb
 wandb.init(mode="disabled")
 
 import re
+import math
 from tqdm import tqdm
 import torch
 import torch.nn.functional as F
@@ -94,18 +95,30 @@ def main():
                 sentences = [txt_processors["eval"](caption) for caption in sentences]
                 scores = model(ref_images, tar_images, sentences, negative_images, configs['use_temp'])
 
-                log_softmax_scores = F.log_softmax(scores, dim=1)  
+                log_softmax_scores = F.log_softmax(scores.float(), dim=1)  
 
                 target_probs = torch.zeros_like(log_softmax_scores)
                 target_probs[:, 0] = 1.0  # p0 = 1 for each data point
 
                 loss = F.kl_div(log_softmax_scores, target_probs, reduction='batchmean')
 
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"[Warning] NaN/Inf loss at batch {batch_idx}, skipping step")
+                optimizer.zero_grad()
+                continue
+
             scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                filter(lambda p: p.requires_grad, model.parameters()),
+                max_norm=1.0
+            )
             scaler.step(optimizer)
             scaler.update()
 
-            epoch_running_loss += loss.item()
+            loss_val = loss.item()
+            if not math.isnan(loss_val):
+                epoch_running_loss += loss_val
             cur_loss = epoch_running_loss / (batch_idx + 1)
             postfix_dict = {'loss': f"{cur_loss:.4f}"}
             if hasattr(model, 'last_query_diversity') and model.last_query_diversity is not None:

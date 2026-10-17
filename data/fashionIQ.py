@@ -252,23 +252,28 @@ class FashionIQDataset(Dataset):
                     # diff_sorted_indices = [idx_ for idx_ in diff_sorted_indices if idx_ > idx2]
 
             # Negative set : start_of_false_negatives + 1 ~ end_of_false_negatives
-            top_k_score_indices = [
-                i for i in cur_query_score_sorted_indices.tolist()
-            ][start_of_hard_negatives + 1:end_of_hard_negatives + 1]
+            sorted_indices_list = cur_query_score_sorted_indices.tolist()
+            top_k_score_indices = sorted_indices_list[start_of_hard_negatives + 1:end_of_hard_negatives + 1]
 
-            if len(top_k_score_indices) == 0:
-                raise RuntimeError(
-                    f"Hard-negative pool is empty for triplet {index} "
-                    f"(dress_type={cur_dress_type}, target={target_name})"
-                )
+            cur_dress_type_target_images = [triplet['target'] for triplet in self.domain_triplets[cur_dress_type]]
+            topk_image_names = list(set([cur_dress_type_target_images[i] for i in top_k_score_indices if cur_dress_type_target_images[i] != target_name]))
 
+            if len(topk_image_names) == 0:
+                # Fallback 1: take top-k samples directly following target
+                fallback_topk = configs.get("init_topk", 100)
+                fallback_indices = sorted_indices_list[start_index:start_index + fallback_topk]
+                topk_image_names = list(set([cur_dress_type_target_images[i] for i in fallback_indices if cur_dress_type_target_images[i] != target_name]))
 
-            if len(top_k_score_indices) != 0:
-                cur_dress_type_target_images = [triplet['target'] for triplet in self.domain_triplets[cur_dress_type]]
-                # cur_dress_type_target_images = [image for image in self.domain_image_names[cur_dress_type]]
-                topk_image_names = list(set([cur_dress_type_target_images[i] for i in top_k_score_indices if cur_dress_type_target_images[i] != target_name]))
-            else:
-                assert 0, "Empty negative set is defined"
+            if len(topk_image_names) == 0:
+                # Fallback 2: if target is at or near the end, take top-k from the beginning
+                fallback_topk = configs.get("init_topk", 100)
+                fallback_indices = sorted_indices_list[:fallback_topk]
+                topk_image_names = list(set([cur_dress_type_target_images[i] for i in fallback_indices if cur_dress_type_target_images[i] != target_name]))
+
+            if len(topk_image_names) == 0:
+                # Fallback 3: entire pool except target
+                topk_image_names = list(set([img for img in cur_dress_type_target_images if img != target_name]))
+
             self.hard_images.append(topk_image_names)
 
         if configs["experiment_description"] != 'debug':

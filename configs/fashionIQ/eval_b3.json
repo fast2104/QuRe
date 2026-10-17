@@ -19,7 +19,7 @@
     "mode": "eval",
     "negative": "random",
     "use_temp": true,
-    "pretrained_path": "",
+    "pretrained_path": "experiments/b3_prompt_flow_gamma0.5_2026-10-17_1",
     "prompt_flow": {
         "enabled": true,
         "mode": "residual",

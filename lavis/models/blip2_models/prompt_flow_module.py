@@ -36,7 +36,8 @@ class Encoder(nn.Module):
     def forward(self, inps):
         weight_mean = self.weight_mean(inps)
         weight_log_variance = self.weight_log_variance(inps)
-        weight_std = torch.exp(0.5 * torch.clamp(weight_log_variance, min=-10.0, max=10.0))
+        weight_std = torch.exp(0.5 * torch.clamp(weight_log_variance, min=-10.0, max=5.0))
+        weight_std = torch.clamp(weight_std, min=1e-5, max=10.0)
         return weight_mean, weight_std
 
 
@@ -198,6 +199,7 @@ class PromptFlow(nn.Module):
         # 5. Decode transformed latent back to query token space
         z_k = z.view(batch_size, self.num_query_tokens, self.embed_dim)
         delta_q = self.decoder(z_k)  # (batch_size, num_query_tokens, embed_dim)
+        delta_q = torch.clamp(delta_q, min=-10.0, max=10.0)
 
         if not self.training and self.eval_mode == "fixed":
             self._cached_eval_delta = delta_q[:1].detach().clone()

@@ -33,11 +33,10 @@ def _get_experiment_index(experiment_path):
 
 def create_experiment_export_folder(experiment_dir, experiment_description):
     print(os.path.abspath(experiment_dir))
-    if not os.path.exists(experiment_dir):
-        os.mkdir(experiment_dir)
+    os.makedirs(experiment_dir, exist_ok=True)
     experiment_path = get_name_of_experiment_path(experiment_dir, experiment_description)
     print(os.path.abspath(experiment_path))
-    os.mkdir(experiment_path)
+    os.makedirs(experiment_path, exist_ok=True)
     print("folder created: " + os.path.abspath(experiment_path))
     return experiment_path
 

@@ -13,6 +13,8 @@ from transforms import image_transform_factory
 from data import create_dataloaders
 from models import create_qure_models
 import torch
+import wandb
+wandb.init(mode="disabled")
 
 def main():
     configs = get_experiment_config()
