@@ -1,0 +1,32 @@
+{
+    "epoch": 30,
+    "model": "blip2",
+    "backbone": "pretrain_vitL",
+    "batch_size": 8,
+    "num_workers": 16,
+    "img_size": 224,
+    "blip_size": "base",
+    "text_encoder": "blip",
+    "weight_decay": 5e-2,
+    "random_seed": 1000,
+    "experiment_dir": "experiments",
+    "init_lr": 5e-6,
+    "dataset": "fashionIQ",
+    "wandb_project_name": "QuRe",
+    "wandb_account_name": "-",
+    "device_idx": "0",
+    "experiment_description": "prompt_flow_only",
+    "mode": "train",
+    "use_temp": true,
+    "use_rerank": false,
+    "eval_frequency": 0,
+    "prompt_flow": {
+        "enabled": true,
+        "mode": "residual",
+        "num_samples": 1,
+        "num_flows": 4,
+        "gamma": 0.1,
+        "eval_mode": "mean",
+        "freeze_base_query_tokens": true
+    }
+}

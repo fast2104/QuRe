@@ -1,6 +1,5 @@
 {
     "epoch": 30,
-    "negative_definition_epoch_num" : 6,
     "model": "blip2",
     "backbone": "pretrain_vitL",
     "batch_size": 8,
@@ -17,20 +16,8 @@
     "wandb_project_name": "QuRe",
     "wandb_account_name": "-",
     "device_idx": "0",
-    "experiment_description": "b3_prompt_flow_gamma0.5",
+    "experiment_description": "debug",
     "mode": "train",
-    "negative": "random_rerank",
     "use_temp": true,
-    "use_rerank": true,
-    "consecutive_threshold" : 1,
-    "percentage_threshold" : 5,
-    "rerank_warmup": true,
-    "init_topk": 100,
-    "prompt_flow": {
-        "enabled": true,
-        "mode": "residual",
-        "num_samples": 1,
-        "gamma": 0.5,
-        "freeze_base_query_tokens": true
-    }
+    "prompt_flow_kl_weight": 0.01
 }
