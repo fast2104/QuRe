@@ -2,7 +2,7 @@
     "epoch": 30,
     "model": "blip2",
     "backbone": "pretrain_vitL",
-    "batch_size": 8,
+    "batch_size": 16,
     "num_workers": 16,
     "img_size": 224,
     "blip_size": "base",

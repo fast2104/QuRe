@@ -1,0 +1,152 @@
+{
+    "os": "Linux-6.8.0-142-generic-x86_64-with-glibc2.39",
+    "python": "3.11.8",
+    "heartbeatAt": "2026-11-06T16:53:24.484762",
+    "startedAt": "2026-11-06T16:53:24.168429",
+    "docker": null,
+    "cuda": null,
+    "args": [
+        "--config_path=configs/fashionIQ/train.json",
+        "--experiment_description=3qformer_pfm_bs16",
+        "--num_workers=16"
+    ],
+    "state": "running",
+    "program": "/home/iec/sontung_veryIMPORTANT/QuRe/train_qure.py",
+    "codePathLocal": "train_qure.py",
+    "codePath": "train_qure.py",
+    "git": {
+        "remote": "https://github.com/fast2104/QuRe.git",
+        "commit": "6f29586e93dc7f133c11edeaedc33999fe27c6a6"
+    },
+    "email": "phatnt.b23vt325@stu.ptit.edu.vn",
+    "root": "/home/iec/sontung_veryIMPORTANT/QuRe",
+    "host": "iec",
+    "username": "iec",
+    "executable": "/home/iec/miniconda3/envs/qure/bin/python",
+    "cpu_count": 12,
+    "cpu_count_logical": 20,
+    "cpu_freq": {
+        "current": 1.8951500000000003,
+        "min": 800.0,
+        "max": 4580.0
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 2.973,
+            "min": 800.0,
+            "max": 4800.0
+        },
+        {
+            "current": 0.8,
+            "min": 800.0,
+            "max": 4800.0
+        },
+        {
+            "current": 2.781,
+            "min": 800.0,
+            "max": 4800.0
+        },
+        {
+            "current": 0.8,
+            "min": 800.0,
+            "max": 4800.0
+        },
+        {
+            "current": 3.12,
+            "min": 800.0,
+            "max": 4900.0
+        },
+        {
+            "current": 3.037,
+            "min": 800.0,
+            "max": 4900.0
+        },
+        {
+            "current": 3.034,
+            "min": 800.0,
+            "max": 4900.0
+        },
+        {
+            "current": 0.8,
+            "min": 800.0,
+            "max": 4900.0
+        },
+        {
+            "current": 3.159,
+            "min": 800.0,
+            "max": 4800.0
+        },
+        {
+            "current": 0.8,
+            "min": 800.0,
+            "max": 4800.0
+        },
+        {
+            "current": 2.877,
+            "min": 800.0,
+            "max": 4800.0
+        },
+        {
+            "current": 0.8,
+            "min": 800.0,
+            "max": 4800.0
+        },
+        {
+            "current": 2.264,
+            "min": 800.0,
+            "max": 4800.0
+        },
+        {
+            "current": 0.8,
+            "min": 800.0,
+            "max": 4800.0
+        },
+        {
+            "current": 0.8,
+            "min": 800.0,
+            "max": 4800.0
+        },
+        {
+            "current": 0.8,
+            "min": 800.0,
+            "max": 4800.0
+        },
+        {
+            "current": 3.072,
+            "min": 800.0,
+            "max": 3600.0
+        },
+        {
+            "current": 3.086,
+            "min": 800.0,
+            "max": 3600.0
+        },
+        {
+            "current": 3.197,
+            "min": 800.0,
+            "max": 3600.0
+        },
+        {
+            "current": 3.088,
+            "min": 800.0,
+            "max": 3600.0
+        }
+    ],
+    "disk": {
+        "/": {
+            "total": 914.7823104858398,
+            "used": 899.7586288452148
+        }
+    },
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "gpu_count": 1,
+    "gpu_devices": [
+        {
+            "name": "NVIDIA GeForce RTX 4090",
+            "memory_total": 25757220864
+        }
+    ],
+    "memory": {
+        "total": 31.174633026123047
+    }
+}
