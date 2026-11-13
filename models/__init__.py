@@ -14,4 +14,7 @@ def create_qure_models(configs, device):
     model, _, txt_processors = load_model_and_preprocess(name=model_name, model_type=backbone, is_eval=False,
                                                          device=device)
 
+    if "prompt_flow_kl_weight" in configs:
+        model.prompt_flow_kl_weight = float(configs["prompt_flow_kl_weight"])
+    print(f"Residual PFM: scale={model.ref_flow_scale.item():.4g}, KL weight={model.prompt_flow_kl_weight:g}")
     return model, txt_processors

@@ -44,7 +44,13 @@ from lavis.models.blip2_models.blip2_t5_instruct import Blip2T5Instruct
 from lavis.models.blip2_models.blip2_vicuna_instruct import Blip2VicunaInstruct
 from lavis.models.blip2_models.blip2_vicuna_xinstruct import Blip2VicunaXInstruct
 
-from lavis.models.blip_diffusion_models.blip_diffusion import BlipDiffusion
+try:
+    from lavis.models.blip_diffusion_models.blip_diffusion import BlipDiffusion
+except ImportError as exc:
+    # Retrieval models can run without the optional diffusion stack.
+    _diffusion_import_error = exc
+else:
+    _diffusion_import_error = None
 
 from lavis.models.pnp_vqa_models.pnp_vqa import PNPVQA
 from lavis.models.pnp_vqa_models.pnp_unifiedqav2_fid import PNPUnifiedQAv2FiD
@@ -73,7 +79,6 @@ __all__ = [
     "BlipFeatureExtractor",
     "BlipCaption",
     "BlipClassification",
-    "BlipDiffusion",
     "BlipITM",
     "BlipNLVR",
     "BlipPretrain",
@@ -98,6 +103,15 @@ __all__ = [
     "Blip2QuRe",
 ]
 
+if _diffusion_import_error is None:
+    __all__.append("BlipDiffusion")
+
+
+def _get_model_class(name):
+    if name == "blip_diffusion" and _diffusion_import_error is not None:
+        raise ImportError("BLIP Diffusion dependencies could not be imported") from _diffusion_import_error
+    return registry.get_model_class(name)
+
 
 def load_model(name, model_type, is_eval=False, device="cpu", checkpoint=None):
     """
@@ -119,7 +133,7 @@ def load_model(name, model_type, is_eval=False, device="cpu", checkpoint=None):
         model (torch.nn.Module): model.
     """
 
-    model = registry.get_model_class(name).from_pretrained(model_type=model_type)
+    model = _get_model_class(name).from_pretrained(model_type=model_type)
 
     if checkpoint is not None:
         model.load_checkpoint(checkpoint)
@@ -204,7 +218,7 @@ def load_model_and_preprocess(name, model_type, is_eval=False, device="cpu"):
         vis_processors (dict): preprocessors for visual inputs.
         txt_processors (dict): preprocessors for text inputs.
     """
-    model_cls = registry.get_model_class(name)
+    model_cls = _get_model_class(name)
 
     # load model
     model = model_cls.from_pretrained(model_type=model_type)

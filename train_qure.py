@@ -56,7 +56,7 @@ def main():
         missing_keys = [
             key
             for key in incompatible_keys.missing_keys
-            if not key.startswith("ref_prompt_flow.")
+            if key != "ref_flow_scale" and not key.startswith("ref_prompt_flow.")
         ]
         if missing_keys or incompatible_keys.unexpected_keys:
             raise RuntimeError(
@@ -66,7 +66,7 @@ def main():
             )
         if incompatible_keys.missing_keys:
             print(
-                "Checkpoint predates the reference prompt-flow module; "
+                "Checkpoint lacks some residual prompt-flow parameters; "
                 "its parameters will be initialized from scratch."
             )
         log_file = os.path.join(os.path.dirname(checkpoint_path), "log.txt")
@@ -83,6 +83,7 @@ def main():
         model.train()
 
         epoch_running_loss = 0.0
+        epoch_kl = torch.zeros((), device=device)
         cosine_lr_schedule(optimizer, epoch, max_epochs, configs["init_lr"], configs["init_lr"]/100)
         train_dataloader_tqdm = tqdm(train_dataloader, desc="Epoch {}".format(epoch+1))
         for batch_idx, (ref_images, tar_images, target_ids, sentences) in enumerate(train_dataloader_tqdm):
@@ -97,6 +98,7 @@ def main():
                 loss = contrastive_loss(scores, target_ids)
                 if model.prompt_flow_kl is not None:
                     loss = loss + model.prompt_flow_kl_weight * model.prompt_flow_kl
+                    epoch_kl += model.prompt_flow_kl.detach()
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -106,6 +108,10 @@ def main():
             cur_loss = epoch_running_loss / (batch_idx + 1)
             train_dataloader_tqdm.set_postfix({'loss': cur_loss})
 
+        mean_kl = epoch_kl.item() / (batch_idx + 1)
+        weighted_kl = model.prompt_flow_kl_weight * mean_kl
+        print(f"[PFM epoch {epoch + 1}] retrieval={cur_loss - weighted_kl:.4f} "
+              f"KL={mean_kl:.4f} weighted_KL={weighted_kl:.4f} scale={model.ref_flow_scale.item():.5f}")
         train_results = {'loss' : cur_loss, 'lr' : get_current_lr(optimizer)}
         print(f"[EPOCH {epoch+1}/{max_epochs}] Loss : {train_results['loss']} lr : {train_results['lr']}")
         if configs["experiment_description"] != 'debug':
@@ -128,7 +134,7 @@ def main():
             append_log(os.path.join(saving_path, "log.txt"), f"Epoch : {epoch + 1}\n")
             print(f"Saved checkpoint to {os.path.join(saving_path, 'model.pth')}")
 
-        eval_frequency = 1
+        eval_frequency = configs.get("eval_frequency", 1)
         if (epoch + 1) % eval_frequency == 0:
             if configs['dataset'] == 'fashionIQ':
                 eval_fiq(model, txt_processors, test_dataloaders, epoch, configs)
