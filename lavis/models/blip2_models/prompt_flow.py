@@ -31,9 +31,9 @@ class PlanarFlow(nn.Module):
 
 
 class PlanarPromptFlow(nn.Module):
-    """Predict reference-token pooling logits from the image and relative caption."""
+    """Decode a pooling prompt from the reference image and relative caption."""
 
-    def __init__(self, condition_dim, hidden_dim, num_prompts, num_flows=10):
+    def __init__(self, condition_dim, hidden_dim, token_dim, num_flows=10):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_flows = num_flows
@@ -51,18 +51,19 @@ class PlanarPromptFlow(nn.Module):
         self.prompt_decoder = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.Softplus(),
-            nn.Linear(hidden_dim, num_prompts),
+            nn.Linear(hidden_dim, token_dim),
         )
-        nn.init.zeros_(self.prompt_decoder[-1].weight)
+        nn.init.normal_(self.prompt_decoder[-1].weight, std=0.02)
         nn.init.zeros_(self.prompt_decoder[-1].bias)
 
-    def forward(self, features):
+    def forward(self, ref_tokens, caption):
+        features = torch.cat([ref_tokens.float().mean(dim=1), caption.float()], dim=-1)
         if features.device.type == "cuda":
             with torch.autocast(device_type="cuda", enabled=False):
-                return self._forward(features.float())
-        return self._forward(features.float())
+                return self._forward(features, ref_tokens.float())
+        return self._forward(features, ref_tokens.float())
 
-    def _forward(self, features):
+    def _forward(self, features, ref_tokens):
         condition = self.condition(features)
         mean = self.mean(condition)
         log_variance = self.log_variance(condition).clamp(min=-10.0, max=10.0)
@@ -94,7 +95,9 @@ class PlanarPromptFlow(nn.Module):
             )
             log_det_jacobian = log_det_jacobian + log_det.float()
 
-        logits = self.prompt_decoder(latent)
+        prompt = self.prompt_decoder(latent)
+        keys = nn.functional.normalize(ref_tokens, dim=-1)
+        logits = (keys * prompt.unsqueeze(1)).sum(dim=-1)
 
         log_variance = log_variance.float()
         initial_latent = initial_latent.float()

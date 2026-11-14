@@ -99,7 +99,7 @@ class Blip2QuRe(Blip2Base):
         self.ref_pool_flow = PlanarPromptFlow(
             condition_dim=2 * embed_dim,
             hidden_dim=64,
-            num_prompts=num_query_token,
+            token_dim=embed_dim,
             num_flows=num_prompt_flows,
         )
         self.prompt_flow_kl_weight = prompt_flow_kl_weight
@@ -193,8 +193,7 @@ class Blip2QuRe(Blip2Base):
         text_hidden = text_hidden / text_mask.sum(dim=1).clamp_min(1)
         text_features = self.text_proj(text_hidden)
 
-        condition = torch.cat([ref_tokens.mean(dim=1), text_features], dim=-1)
-        pool_logits, self.prompt_flow_kl = self.ref_pool_flow(condition)
+        pool_logits, self.prompt_flow_kl = self.ref_pool_flow(ref_tokens, text_features)
         weights = pool_logits.softmax(dim=1).unsqueeze(-1)
         ref_features = (weights * ref_tokens.float()).sum(dim=1).to(text_features.dtype)
 
