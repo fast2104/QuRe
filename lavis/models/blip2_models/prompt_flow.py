@@ -31,15 +31,14 @@ class PlanarFlow(nn.Module):
 
 
 class PlanarPromptFlow(nn.Module):
-    """Generate image-conditioned Q-Former prompts with Bayes-PFL planar flows."""
+    """Predict reference-token pooling logits from the image and relative caption."""
 
-    def __init__(self, vision_dim, hidden_dim, num_prompts, num_flows=10):
+    def __init__(self, condition_dim, hidden_dim, num_prompts, num_flows=10):
         super().__init__()
         self.hidden_dim = hidden_dim
-        self.num_prompts = num_prompts
         self.num_flows = num_flows
         self.condition = nn.Sequential(
-            nn.Linear(vision_dim, hidden_dim),
+            nn.Linear(condition_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.Softplus(),
         )
@@ -52,19 +51,19 @@ class PlanarPromptFlow(nn.Module):
         self.prompt_decoder = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.Softplus(),
-            nn.Linear(hidden_dim, num_prompts * hidden_dim),
+            nn.Linear(hidden_dim, num_prompts),
         )
-        nn.init.normal_(self.prompt_decoder[-1].weight, mean=0.0, std=1e-3)
+        nn.init.zeros_(self.prompt_decoder[-1].weight)
         nn.init.zeros_(self.prompt_decoder[-1].bias)
 
-    def forward(self, image_features):
-        if image_features.device.type == "cuda":
+    def forward(self, features):
+        if features.device.type == "cuda":
             with torch.autocast(device_type="cuda", enabled=False):
-                return self._forward(image_features.float())
-        return self._forward(image_features.float())
+                return self._forward(features.float())
+        return self._forward(features.float())
 
-    def _forward(self, image_features):
-        condition = self.condition(image_features)
+    def _forward(self, features):
+        condition = self.condition(features)
         mean = self.mean(condition)
         log_variance = self.log_variance(condition).clamp(min=-10.0, max=10.0)
 
@@ -95,9 +94,7 @@ class PlanarPromptFlow(nn.Module):
             )
             log_det_jacobian = log_det_jacobian + log_det.float()
 
-        prompts = self.prompt_decoder(latent).reshape(
-            batch_size, self.num_prompts, self.hidden_dim
-        )
+        logits = self.prompt_decoder(latent)
 
         log_variance = log_variance.float()
         initial_latent = initial_latent.float()
@@ -112,4 +109,4 @@ class PlanarPromptFlow(nn.Module):
         log_p = -0.5 * (log_two_pi + final_latent.square()).sum(dim=-1)
         flow_kl = (log_q - log_p - log_det_jacobian).mean()
 
-        return prompts, flow_kl
+        return logits, flow_kl

@@ -16,5 +16,5 @@ def create_qure_models(configs, device):
 
     if "prompt_flow_kl_weight" in configs:
         model.prompt_flow_kl_weight = float(configs["prompt_flow_kl_weight"])
-    print(f"Residual PFM: scale={model.ref_flow_scale.item():.4g}, KL weight={model.prompt_flow_kl_weight:g}")
+    print(f"Caption-conditioned PFM pooling: KL weight={model.prompt_flow_kl_weight:g}")
     return model, txt_processors

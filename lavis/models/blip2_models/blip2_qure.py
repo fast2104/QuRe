@@ -96,16 +96,15 @@ class Blip2QuRe(Blip2Base):
         self._prepare_qformer(self.text_Qformer)
 
         hidden_size = self.Qformer.config.hidden_size
-        self.ref_prompt_flow = PlanarPromptFlow(
-            vision_dim=self.visual_encoder.num_features,
-            hidden_dim=hidden_size,
+        self.ref_pool_flow = PlanarPromptFlow(
+            condition_dim=2 * embed_dim,
+            hidden_dim=64,
             num_prompts=num_query_token,
             num_flows=num_prompt_flows,
         )
         self.prompt_flow_kl_weight = prompt_flow_kl_weight
         self.prompt_flow_kl = None
         self.ref_query_tokens.requires_grad_(False)
-        self.ref_flow_scale = nn.Parameter(torch.tensor(0.01))
 
         self.vision_proj = nn.Linear(hidden_size, embed_dim)
         self.ref_proj = nn.Linear(hidden_size, embed_dim)
@@ -150,21 +149,14 @@ class Blip2QuRe(Blip2Base):
         self._initialize_separate_qformers()
         return message
 
-    def _encode_image_queries(self, images, qformer, query_tokens, prompt_flow=None):
+    def _encode_image_queries(self, images, qformer, query_tokens):
         with self.maybe_autocast():
             image_embedding = self.ln_vision(self.visual_encoder(images))
         image_embedding = image_embedding.float()
         image_atts = torch.ones(
             image_embedding.size()[:-1], dtype=torch.long, device=images.device
         )
-        if prompt_flow is None:
-            expanded_query_tokens = query_tokens.expand(
-                image_embedding.shape[0], -1, -1
-            )
-        else:
-            delta, self.prompt_flow_kl = prompt_flow(image_embedding.mean(dim=1))
-            base = query_tokens.expand(image_embedding.size(0), -1, -1)
-            expanded_query_tokens = base + self.ref_flow_scale * delta.to(base.dtype)
+        expanded_query_tokens = query_tokens.expand(image_embedding.size(0), -1, -1)
         query_output = qformer.bert(
             query_embeds=expanded_query_tokens,
             encoder_hidden_states=image_embedding,
@@ -186,9 +178,8 @@ class Blip2QuRe(Blip2Base):
             ref_images,
             self.ref_Qformer,
             self.ref_query_tokens,
-            prompt_flow=self.ref_prompt_flow,
         )
-        ref_features = self.ref_proj(ref_query_embeds).mean(dim=1)
+        ref_tokens = self.ref_proj(ref_query_embeds)
 
         text_output = self.text_Qformer.bert(
             text_tokens.input_ids,
@@ -201,6 +192,11 @@ class Blip2QuRe(Blip2Base):
         text_hidden = (text_output.last_hidden_state * text_mask).sum(dim=1)
         text_hidden = text_hidden / text_mask.sum(dim=1).clamp_min(1)
         text_features = self.text_proj(text_hidden)
+
+        condition = torch.cat([ref_tokens.mean(dim=1), text_features], dim=-1)
+        pool_logits, self.prompt_flow_kl = self.ref_pool_flow(condition)
+        weights = pool_logits.softmax(dim=1).unsqueeze(-1)
+        ref_features = (weights * ref_tokens.float()).sum(dim=1).to(text_features.dtype)
 
         query_features = self.query_fusion(
             torch.cat([ref_features, text_features], dim=-1)

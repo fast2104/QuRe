@@ -53,21 +53,9 @@ def main():
         print(f" Loading training checkpoint from {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=device)
         incompatible_keys = model.load_state_dict(checkpoint, strict=False)
-        missing_keys = [
-            key
-            for key in incompatible_keys.missing_keys
-            if key != "ref_flow_scale" and not key.startswith("ref_prompt_flow.")
-        ]
-        if missing_keys or incompatible_keys.unexpected_keys:
+        if incompatible_keys.missing_keys or incompatible_keys.unexpected_keys:
             raise RuntimeError(
-                "Training checkpoint is incompatible with this model. "
-                f"Missing keys: {missing_keys}; "
-                f"unexpected keys: {incompatible_keys.unexpected_keys}"
-            )
-        if incompatible_keys.missing_keys:
-            print(
-                "Checkpoint lacks some residual prompt-flow parameters; "
-                "its parameters will be initialized from scratch."
+                f"Resume requires a matching pooling-model checkpoint: {incompatible_keys}"
             )
         log_file = os.path.join(os.path.dirname(checkpoint_path), "log.txt")
         if os.path.exists(log_file):
@@ -111,7 +99,7 @@ def main():
         mean_kl = epoch_kl.item() / (batch_idx + 1)
         weighted_kl = model.prompt_flow_kl_weight * mean_kl
         print(f"[PFM epoch {epoch + 1}] retrieval={cur_loss - weighted_kl:.4f} "
-              f"KL={mean_kl:.4f} weighted_KL={weighted_kl:.4f} scale={model.ref_flow_scale.item():.5f}")
+              f"KL={mean_kl:.4f} weighted_KL={weighted_kl:.4f}")
         train_results = {'loss' : cur_loss, 'lr' : get_current_lr(optimizer)}
         print(f"[EPOCH {epoch+1}/{max_epochs}] Loss : {train_results['loss']} lr : {train_results['lr']}")
         if configs["experiment_description"] != 'debug':
