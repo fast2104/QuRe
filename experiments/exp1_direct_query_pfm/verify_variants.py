@@ -1,0 +1,38 @@
+import torch
+from pfm_variants import DirectPromptFlow
+
+torch.manual_seed(1000)
+flow = DirectPromptFlow(1024, 32, 768)
+visual = torch.randn(2, 17, 1024)
+assert not any('seed' in name or 'query_tokens' in name for name, _ in flow.named_parameters())
+flow.eval()
+q, kl, rms = flow(visual)
+assert q.shape == (2, 32, 768)
+assert torch.isfinite(q).all()
+torch.testing.assert_close(q, flow(visual)[0])
+assert not torch.equal(q[0], q[1])
+assert not torch.equal(q[:, 0], q[:, 1])
+restored = DirectPromptFlow(1024, 32, 768)
+restored.load_state_dict(flow.state_dict(), strict=True)
+restored.eval()
+torch.testing.assert_close(q, restored(visual)[0])
+flow.train()
+first, kl, _ = flow(visual)
+assert not torch.equal(first, flow(visual)[0])
+retrieval_probe = (first * torch.randn_like(first)).mean()
+retrieval_probe.backward()
+for name in ('context.1.weight', 'posterior.weight', 'flow_params.weight', 'decoder.2.weight'):
+    grad = dict(flow.named_parameters())[name].grad
+    assert grad is not None and torch.isfinite(grad).all() and grad.abs().sum() > 0, name
+flow.zero_grad(set_to_none=True)
+_, kl, _ = flow(visual)
+kl.backward()
+assert torch.isfinite(kl)
+assert all(torch.isfinite(p.grad).all() for p in flow.parameters() if p.grad is not None)
+z = torch.randn(4, dtype=torch.float64, requires_grad=True)
+u, w = torch.randn(4, dtype=torch.float64), torch.randn(4, dtype=torch.float64)
+bias = torch.randn(1, dtype=torch.float64)
+jac = torch.autograd.functional.jacobian(lambda value: flow.planar_step(value, u, w, bias)[0], z)
+_, expected = torch.linalg.slogdet(jac)
+torch.testing.assert_close(flow.planar_step(z, u, w, bias)[1], expected)
+print('PASS direct generation, image conditioning, stochastic train, deterministic eval, gradients, state reload, Jacobian')
