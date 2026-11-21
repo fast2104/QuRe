@@ -26,6 +26,7 @@ def parse_args():
     parser.add_argument("--fashioniq-root", required=True, type=Path)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--epochs-per-session", type=int)
     return parser.parse_args()
 
 
@@ -202,12 +203,29 @@ def load_training_checkpoint(path, model, optimizer, scheduler, scaler):
     return state
 
 
+def verify_resume_config(saved, current):
+    # The previous notebook differs only in evaluation and checkpoint handling.
+    old_digest = "f249658f36644c0e469337ed4287e55ed377255a3e74383db8e885436d5d3b99"
+    ignored = {"output_dir", "evaluate_every", "source_sha256"}
+    if (saved.get("source_sha256") not in (current["source_sha256"], old_digest)
+            or {k: v for k, v in saved.items() if k not in ignored}
+            != {k: v for k, v in current.items() if k not in ignored}):
+        raise ValueError("Checkpoint/config mismatch. Check the variant, seed and training settings.")
+
+
+def write_json(path, value):
+    temp = path.with_suffix(".json.tmp")
+    temp.write_text(json.dumps(value, indent=2), encoding="utf-8")
+    os.replace(temp, path)
+
+
 def main():
     args = parse_args()
     config = json.loads(args.config.read_text(encoding="utf-8"))
     output_dir = args.output_dir or Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
+    if args.epochs_per_session is not None and args.epochs_per_session < 1:
+        raise ValueError("--epochs-per-session must be positive")
     seed_everything(config["seed"])
     run_started = time.time()
 
@@ -293,9 +311,6 @@ def main():
     train_loader = data_module.make_train_loader(
         args.fashioniq_root, transform, config["batch_size"], config["num_workers"]
     )
-    val_loaders = data_module.make_validation_loaders(
-        args.fashioniq_root, transform, config["eval_batch_size"], config["num_workers"]
-    )
 
     optimizer = torch.optim.AdamW(
         (parameter for parameter in model.parameters() if parameter.requires_grad),
@@ -315,14 +330,29 @@ def main():
                 history = []
         except (OSError, json.JSONDecodeError):
             history = []
+    epoch_metrics = {}
     if args.resume:
         state = load_training_checkpoint(args.resume, model, optimizer, scheduler, scaler)
+        verify_resume_config(state["configs"], config)
         start_epoch = state["epoch"] + 1
         global_step = state.get("global_step", start_epoch * len(train_loader))
         best_score = state.get("best_metric", state.get("metrics", {}).get("average_recall", best_score))
         best_epoch = state.get("best_epoch")
+        epoch_metrics = state["metrics"]
+        history = [row for row in history if row["epoch"] < start_epoch]
+        history.append(dict(epoch_metrics, epoch=start_epoch))
+        del state
+    write_json(output_dir / "config.json", config)
+    stop_epoch = config["epochs"]
+    if args.epochs_per_session:
+        stop_epoch = min(stop_epoch, start_epoch + args.epochs_per_session)
 
-    for epoch in range(start_epoch, config["epochs"]):
+    def save(name, completed):
+        atomic_save_checkpoint(output_dir / name, model=model, optimizer=optimizer, scheduler=scheduler,
+                               scaler=scaler, epoch=completed - 1, global_step=global_step,
+                               best_metric=best_score, best_epoch=best_epoch, config=config, metrics=epoch_metrics)
+
+    for epoch in range(start_epoch, stop_epoch):
         model.epoch = epoch
         model.train()
         lr = optimizer.param_groups[0]["lr"]
@@ -356,36 +386,32 @@ def main():
             f"{key}={epoch_metrics[key]:.6f}" for key in loss_metric_keys
         )
         print(f"[EPOCH {epoch + 1}/{config['epochs']}] {loss_report} lr={lr:.3e}", flush=True)
-        if (epoch + 1) % config["evaluate_every"] == 0:
-            epoch_metrics.update(evaluate(model, val_loaders, txt_processors["eval"], device))
-            print(
-                f"[VALIDATION EPOCH {epoch + 1}]\n"
-                + json.dumps(
-                    {key: value for key, value in epoch_metrics.items() if "recall" in key},
-                    indent=2,
-                    sort_keys=True,
-                ),
-                flush=True,
-            )
-            model.train()
-        history.append({"epoch": epoch + 1, **epoch_metrics})
-        selection_metric = epoch_metrics.get("average_recall", -epoch_metrics["loss"])
-        is_best = selection_metric > best_score
-        if is_best:
-            best_score, best_epoch = selection_metric, epoch + 1
-        checkpoint_kwargs = dict(
-            model=model, optimizer=optimizer, scheduler=scheduler, scaler=scaler,
-            epoch=epoch, global_step=global_step, best_metric=best_score,
-            best_epoch=best_epoch, config=config, metrics=epoch_metrics,
+        history.append(epoch_metrics)
+        save("last.pt", epoch + 1)
+        write_json(history_path, history)
+        write_json(output_dir / "latest_metrics.json", epoch_metrics)
+        print(f"[CHECKPOINT] Saved epoch {epoch + 1} to {output_dir / 'last.pt'}", flush=True)
+
+    if stop_epoch == config["epochs"] and "average_recall" not in epoch_metrics:
+        val_loaders = data_module.make_validation_loaders(
+            args.fashioniq_root, transform, config["eval_batch_size"], config["num_workers"]
         )
-        atomic_save_checkpoint(output_dir / "last.pt", **checkpoint_kwargs)
-        if is_best:
-            atomic_save_checkpoint(output_dir / "best.pt", **checkpoint_kwargs)
-        (output_dir / "latest_metrics.json").write_text(
-            json.dumps(epoch_metrics, indent=2), encoding="utf-8"
-        )
-        history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
-        (output_dir / "run_summary.json").write_text(json.dumps({
+        epoch_metrics.update(evaluate(model, val_loaders, txt_processors["eval"], device))
+        print(f"[VALIDATION EPOCH {stop_epoch}]\n" + json.dumps(
+            {k: v for k, v in epoch_metrics.items() if "recall" in k}, indent=2), flush=True)
+        score = epoch_metrics["average_recall"]
+        if score > best_score:
+            best_score, best_epoch = score, stop_epoch
+            save("best.pt", stop_epoch)
+        save("last.pt", stop_epoch)
+    elif stop_epoch < config["epochs"]:
+        print(f"[SESSION] Completed {stop_epoch}/{config['epochs']} epochs. Resume from last.pt.", flush=True)
+    elif not (output_dir / "last.pt").is_file():
+        save("last.pt", stop_epoch)
+    history[-1] = epoch_metrics
+    write_json(history_path, history)
+    write_json(output_dir / "latest_metrics.json", epoch_metrics)
+    write_json(output_dir / "run_summary.json", {
             "run_id": output_dir.name,
             "experiment_dir": str(output_dir.resolve()),
             "config": config,
@@ -393,13 +419,13 @@ def main():
             "optimizer": "AdamW",
             "scheduler": "cosine_per_epoch",
             "best_epoch": best_epoch,
-            "best_metric": best_score,
-            "best_checkpoint": str((output_dir / "best.pt").resolve()),
-            "last_epoch": epoch + 1,
+            "best_metric": best_score if best_epoch is not None else None,
+            "best_checkpoint": str((output_dir / "best.pt").resolve()) if (output_dir / "best.pt").is_file() else None,
+            "last_epoch": stop_epoch,
             "global_step": global_step,
             "elapsed_seconds": time.time() - run_started,
             "history_file": str(history_path.resolve()),
-        }, indent=2), encoding="utf-8")
+        })
 
 
 if __name__ == "__main__":

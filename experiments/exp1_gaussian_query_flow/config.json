@@ -19,7 +19,7 @@
   "lambda_var": 0.0,
   "var_gamma": 1.0,
   "var_epsilon": 0.0001,
-  "evaluate_every": 1,
+  "evaluate_every": 30,
   "output_dir": "outputs/gaussian_query_s10_f10",
   "pfm": {
     "variant": "gaussian_query_s10_f10",
@@ -30,5 +30,5 @@
   },
   "experiment_sha": "b36607df9d7813167df9cf2ef1d1de605938f1f2",
   "backbone_sha": "c1c7f6b62fe6d556b9554b6c7cae111f71f67917",
-  "source_sha256": "f249658f36644c0e469337ed4287e55ed377255a3e74383db8e885436d5d3b99"
+  "source_sha256": "d1f8b470438635398bc5d37f80bbd9553c0915e6a4be3786134a1f94ad9a3240"
 }
