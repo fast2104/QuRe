@@ -1,0 +1,33 @@
+{
+  "experiment": "exp1",
+  "backbone": "pretrain_vitL",
+  "epochs": 30,
+  "batch_size": 16,
+  "eval_batch_size": 8,
+  "num_workers": 4,
+  "image_size": 224,
+  "target_ratio": 1.25,
+  "max_txt_len": 32,
+  "num_query_tokens": 32,
+  "init_lr": 5e-06,
+  "min_lr": 5e-08,
+  "weight_decay": 0.05,
+  "seed": 1000,
+  "amp": true,
+  "loss": "inbatch_contrastive",
+  "use_variance": false,
+  "lambda_var": 0.0,
+  "var_gamma": 1.0,
+  "var_epsilon": 0.0001,
+  "evaluate_every": 30,
+  "output_dir": "outputs/exp1_reference_3qpfm",
+  "pfm": {
+    "variant": "reference_3qpfm",
+    "hidden_dim": 64,
+    "num_flows": 10,
+    "source_commit": "237c98d125f14390de4a78a23567947fe329f388"
+  },
+  "experiment_sha": "b36607df9d7813167df9cf2ef1d1de605938f1f2",
+  "backbone_sha": "c1c7f6b62fe6d556b9554b6c7cae111f71f67917",
+  "source_sha256": "008a18c430791d24045e160a8c64a6e7314ea16670ccb522e003194b15f42deb"
+}
